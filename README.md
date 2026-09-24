@@ -1,11 +1,22 @@
 ## Postiz integration in this fork
 
-This fork adds a standalone content worker that reuses the report and writing prompts
-with the open-source LangGraph library, then submits drafts or explicitly scheduled
-posts to a self-hosted Postiz instance. Use the `postiz:*` commands for this workflow;
-`yarn dev` still starts the original upstream Agent Server development workflow.
+This fork adds a standalone worker for Tokenhot's X account: configured sources and
+manual materials enter a persistent candidate pool, related announcements are
+grouped, and selected topics become checked English single-post drafts in official
+self-hosted Postiz. Review, edit, discard and schedule those drafts in Postiz.
+Worker scheduling is disabled by default, including for historical scheduled jobs.
+
+Writing starts are limited to three per day by default in `Asia/Shanghai`, including
+failures, previews and retries. Source checkpoints, deduplication, unknown submission
+results, model-call counts and editorial feedback survive worker restarts. Original
+generated text is retained separately from later observed Postiz edits.
+
+Use the `postiz:*` commands for this workflow; `yarn dev` still starts the original
+upstream Agent Server development workflow described below.
 
 - [Installation and operation guide (中文)](docs/POSTIZ-SETUP.md)
+- [Validation results and acceptance boundaries (中文)](docs/POSTIZ-VALIDATION.md)
+- [Linux deployment and seven-day pilot (中文)](docs/POSTIZ-PILOT.md)
 - [Pinned Postiz deployment sources](deploy/postiz/UPSTREAM.md)
 - [Brand configuration example](config/postiz/brand.example.json)
 

@@ -1,6 +1,6 @@
 # Postiz 内容 worker：验证记录与上线验收
 
-记录日期：2026-09-24。本轮第三批代码的本地回归为 **195 / 195 通过**，已通过编译、编译后 CLI 入口、格式和 Bash 语法检查。第二批 GitHub CI 已全部通过；第三批固定 Postiz 全栈 CI 尚待本次提交执行。代码、依赖、镜像或配置变更后，应重新执行相关检查，不能把历史通过结果当作后续代码已经通过。
+记录日期：2026-09-24。实现提交 `073a1b63b0f5f75f894ee8ba27ca8e21fd809c00` 的本地和 GitHub worker 回归均为 **195 / 195 通过，0 跳过**。该提交的 CI、Unit Tests、Postiz content worker 三个工作流全部成功，包含真实 worker 容器和固定官方 Postiz 完整服务栈启动。代码、依赖、镜像或配置变更后，应重新执行相关检查；本页后续的文档更新不改变这些结果对应的实现提交。
 
 ## 已完成的验证
 
@@ -22,13 +22,15 @@
 
 ## GitHub CI
 
-第二批提交的 [Postiz worker 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736764)、[Lint 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736753) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736737) 已全部通过。这些链接对应第二批代码；本轮第三批的 195 项本地通过和后续 GitHub 执行结果应分别记录。
+第三批实现提交 `073a1b6` 的 [Postiz content worker](https://github.com/LEON-Github123/social-media-agent/actions/runs/35988153460)、[CI：lint、格式与拼写](https://github.com/LEON-Github123/social-media-agent/actions/runs/35988153403) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35988153431) 已全部通过。
+
+第二批提交也已通过 [Postiz worker 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736764)、[Lint 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736753) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736737)。
 
 PR 的 `Postiz content worker` 工作流还增加了实际 Docker 构建和容器验证：检查编译入口，以非 root 用户在只读根文件系统、无网络的容器中入队，再创建新容器检查具名卷持久化和去重。它只使用公开示例数据，不需要业务密钥，也不调用发布服务。各次提交的实际执行结果见 [PR Checks](https://github.com/LEON-Github123/social-media-agent/pull/1/checks)，新增检查在完成前不能视为通过。
 
 ### 本轮新增的固定全栈检查
 
-工作流已补 `main` 分支 push 触发，并将环境变量示例、部署文件及 `docs/POSTIZ-*.md` 纳入路径过滤。PR 和手动执行也保留。新增独立 `stack` job，运行 [test-stack.sh](../deploy/postiz/test-stack.sh)；**脚本和工作流已编写，不等于这一提交已经在 GitHub 执行通过。**
+工作流已补 `main` 分支 push 触发，并将环境变量示例、部署文件及 `docs/POSTIZ-*.md` 纳入路径过滤。PR 和手动执行也保留。新增独立 `stack` job，运行 [test-stack.sh](../deploy/postiz/test-stack.sh)；该检查已在上述实现提交上实际执行通过。
 
 该检查的范围是：
 
@@ -39,24 +41,26 @@ PR 的 `Postiz content worker` 工作流还增加了实际 Docker 构建和容�
 - 不使用模型、Postiz 或 X 业务密钥，不创建社交账号连接，不调用模型或公开发布。可选 Temporal UI、管理工具和 Spotlight 不属于本次运行所需服务。
 - 失败时仅上传脱敏后的状态、服务和启动诊断，保留 7 天；不上传 `.env`、合并后的完整配置、完整容器 inspect、PM2 环境 JSON 或数据库。退出时清理本测试随机项目的卷和临时 worker 镜像。
 
-| 本轮检查                               | 实际 run URL / 提交  | 结果                          |
-| -------------------------------------- | -------------------- | ----------------------------- |
-| 第二批 worker、Lint、原仓库 Unit Tests | 上述三个第二批 run   | 已通过                        |
-| 第三批本地 Node 回归、编译与 CLI 入口  | 当前待提交代码       | 195 / 195；编译和入口检查通过 |
-| 第三批 GitHub worker 与容器验证        | 待本轮提交运行后填写 | 待执行 / 核对                 |
-| 固定官方 Postiz + Temporal 全栈启动    | 待本轮提交运行后填写 | 待执行 / 核对                 |
-| 独立 Linux HTTPS 与真实密钥联调        | 见试运行记录         | 未执行                        |
-| 连续 7 天草稿试运行                    | 见试运行记录         | 未执行                        |
+| 本轮检查                               | 实际 run URL / 提交                                                                                          | 结果                                                 |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| 第二批 worker、Lint、原仓库 Unit Tests | 上述三个第二批 run                                                                                           | 已通过                                               |
+| 第三批本地 Node 回归、编译与 CLI 入口  | `073a1b6`                                                                                                    | 195 / 195；编译和入口检查通过                        |
+| 第三批 GitHub worker 与容器验证        | [worker job](https://github.com/LEON-Github123/social-media-agent/actions/runs/35988153460/job/107595591958) | 通过；195 项测试、镜像构建、非 root 持久化与重启去重 |
+| 固定官方 Postiz + Temporal 全栈启动    | [stack job](https://github.com/LEON-Github123/social-media-agent/actions/runs/35988153460/job/107595592175)  | 通过；真实容器启动与内部连通性                       |
+| 独立 Linux HTTPS 与真实密钥联调        | 见试运行记录                                                                                                 | 未执行                                               |
+| 连续 7 天草稿试运行                    | 见试运行记录                                                                                                 | 未执行                                               |
+
+全栈日志显示：10:36:03 UTC 合并配置通过；10:41:17 Postiz、两套 PostgreSQL、Redis、Temporal 和 Elasticsearch 健康；10:41:31 前端、后端、orchestrator 在线，真实 Public API 拒绝未认证请求；10:41:32 非 root worker 能读取 SQLite 并通过私网访问 Postiz；10:41:39 完整检查通过。随后清理隔离项目，job 成功结束。本地执行环境没有 Docker Engine，实际容器证据来自上述 GitHub Linux runner。
 
 ## 尚未完成的验证
 
-- 本地执行环境 **Docker Engine 不可用**；worker 镜像由上面的 GitHub CI 验证。本轮增加了 Postiz / Temporal 全栈 CI 脚本，其真实执行结果需补入上表。worker 容器检查不能替代整套服务联调。
+- 用户的独立 Linux 主机、HTTPS 域名和真实账号仍待配置。GitHub 的隔离全栈测试不能替代该业务环境验收。
 - 没有使用真实模型、Postiz 或 X 密钥执行本次测试，也没有向 X 发帖。
 - 模型内容质量仍需使用真实品牌资料和真实来源试跑。Schema、长度和复审流程通过，不等于所有事实和文案质量自动得到保证。
 - 原仓库 Unit Tests 已由 GitHub 执行；需要真实服务的旧工作流集成测试、生产端到端测试仍未执行。
 - 没有据此验证生产环境的 X 授权能力、额度、模型/采集费用、长时间运行或实际 Docker 卷恢复。
 
-因此，本次结果支持继续进行真实环境的分步验收，不能称为 Docker 已部署成功、生产全量回归通过或真实发布闭环已验证。
+因此，本次结果支持继续进行真实环境的分步验收，不能据此声称用户的云主机已上线、生产全量回归通过或真实发布闭环已验证。
 
 ## 可复现命令
 
