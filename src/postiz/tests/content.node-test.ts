@@ -260,7 +260,7 @@ void test("a shorter configured limit and unknown links reject before a quality-
   assert.equal(calls.length, 3);
 });
 
-void test("a verified brand fact may link to its explicit evidence URL", () => {
+void test("a verified brand fact may supplement but cannot replace the source citation", () => {
   const customInput: ContentInput = {
     ...input,
     brand: {
@@ -275,11 +275,43 @@ void test("a verified brand fact may link to its explicit evidence URL", () => {
   };
   assert.deepEqual(
     validatePost(
-      "Example API accepts PNG. https://example.com/product",
+      `Example API accepts PNG. https://example.com/product Source: ${sourceUrl}`,
       customInput,
     ),
     [],
   );
+  assert.deepEqual(
+    validatePost(
+      "Example API accepts PNG. https://example.com/product",
+      customInput,
+    ),
+    ["The post must link to a supplied source"],
+  );
+});
+
+void test("a brand-only CTA fails before quality approval even when its URL is verified", async () => {
+  const customInput: ContentInput = {
+    ...input,
+    brand: {
+      ...brand,
+      verifiedFacts: [
+        {
+          claim: "Example API accepts PNG",
+          url: "https://example.com/product",
+        },
+      ],
+    },
+  };
+  const outputs = validOutputs();
+  outputs[2] =
+    "<post>Example API accepts PNG. https://example.com/product</post>";
+  const { model, calls } = fakeModel(outputs);
+  const result = await generateContent(customInput, { model });
+  assert.equal(result.quality.approved, false);
+  assert.deepEqual(result.quality.reasons, [
+    "The post must link to a supplied source",
+  ]);
+  assert.equal(calls.length, 3);
 });
 
 void test("empty evidence and unsupported longer-post settings are rejected before model use", async () => {

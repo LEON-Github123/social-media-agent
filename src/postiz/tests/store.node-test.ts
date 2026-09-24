@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Worker } from "node:worker_threads";
+import { DatabaseSync } from "node:sqlite";
+import { CONTENT_SCHEMA_VERSION } from "../migrations.js";
 import {
   ContentJobStore,
   JobConflictError,
@@ -119,6 +121,10 @@ void test("two concurrent SQLite connections can claim the same job only once", 
               `
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
+        if (workerData.moduleUrl.endsWith('.ts')) {
+          const { register } = await import('tsx/esm/api');
+          register();
+        }
         const { ContentJobStore } = await import(workerData.moduleUrl);
         const store = new ContentJobStore(workerData.path);
         const flag = new Int32Array(workerData.flag);
@@ -553,4 +559,313 @@ void test("invalid scheduling and unsupported modes do not create content jobs",
     scheduledAt: "2026-10-01T08:30:00.000Z",
   });
   assert.equal(scheduled.scheduledAt, "2026-10-01T08:30:00.000Z");
+});
+
+function repairRequest(id = "repair-job"): EnqueueContentJob {
+  return {
+    ...request(id),
+    mode: "schedule",
+    scheduledAt: "2026-10-01T08:30:00.000Z",
+    input: {
+      brand: {
+        id: "brand-a",
+        name: "Tokenhot",
+        audience: "Developers",
+        businessContext: "AI tools for developers",
+        contentRules: [],
+        examples: [],
+        language: "English",
+        verifiedFacts: [],
+        maxPostLength: 280,
+      },
+      sources: [
+        { url: "https://example.com/release", text: "A documented release." },
+      ],
+      integrationId: "existing-account",
+      mediaPaths: [],
+    },
+  };
+}
+
+void test("versioned migrations preserve every legacy state and create a WAL-consistent pre-upgrade backup", (t) => {
+  const f = fixture(t);
+  const initial = f.open();
+  assert.equal(initial.migrationBackupPath, null);
+  f.close(initial);
+  const legacy = new DatabaseSync(f.path);
+  t.after(() => legacy.close());
+  legacy.exec(
+    "PRAGMA journal_mode = WAL; DROP TABLE audit_events; DROP TABLE schema_migrations;",
+  );
+  const states = [
+    "queued",
+    "processing",
+    "ready",
+    "rejected",
+    "submitting",
+    "submitted",
+    "unknown",
+    "failed",
+  ];
+  for (const [index, state] of states.entries()) {
+    legacy
+      .prepare(
+        `INSERT INTO postiz_content_jobs (
+      id, brand_id, content_fingerprint, input_json, output_json, state, mode,
+      scheduled_at, postiz_id, postiz_state, platform_post_id, platform_url,
+      last_error, failure_phase, lease_token, lease_owner, lease_expires_at,
+      attempt_count, created_at, updated_at
+    ) VALUES (?, 'legacy-brand', ?, ?, ?, ?, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        state,
+        `fingerprint-${state}`,
+        JSON.stringify({ preserved: state }),
+        JSON.stringify({ draft: state }),
+        state,
+        "2026-10-01T08:30:00Z",
+        state === "submitted" ? "remote-123" : null,
+        state === "submitted" ? "PUBLISHED" : null,
+        state === "submitted" ? "platform-456" : null,
+        state === "submitted" ? "https://x.com/example/status/456" : null,
+        "Retained diagnostic",
+        state === "failed" ? "generation" : null,
+        ["processing", "submitting"].includes(state) ? `lease-${state}` : null,
+        ["processing", "submitting"].includes(state) ? "worker" : null,
+        ["processing", "submitting"].includes(state) ? 50000 : null,
+        index + 1,
+        100 + index,
+        200 + index,
+      );
+  }
+  const before = legacy
+    .prepare("SELECT * FROM postiz_content_jobs ORDER BY id")
+    .all();
+  const upgraded = f.open();
+  assert.ok(upgraded.migrationBackupPath);
+  assert.ok(existsSync(upgraded.migrationBackupPath));
+  assert.deepEqual(
+    legacy.prepare("SELECT * FROM postiz_content_jobs ORDER BY id").all(),
+    before,
+  );
+  assert.equal(
+    legacy.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()?.n,
+    CONTENT_SCHEMA_VERSION,
+  );
+  assert.equal(upgraded.listAuditEvents().length, 0);
+  const backup = new DatabaseSync(upgraded.migrationBackupPath, {
+    readOnly: true,
+  });
+  try {
+    assert.deepEqual(
+      backup.prepare("SELECT * FROM postiz_content_jobs ORDER BY id").all(),
+      before,
+    );
+    assert.equal(
+      backup
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'")
+        .get(),
+      undefined,
+    );
+  } finally {
+    backup.close();
+  }
+  const reopened = f.open();
+  assert.equal(reopened.migrationBackupPath, null);
+  assert.equal(reopened.get("submitted")?.postizId, "remote-123");
+});
+
+void test("a database from a newer schema is rejected before migration or backup", (t) => {
+  const f = fixture(t);
+  const first = f.open();
+  first.enqueue(request());
+  f.close(first);
+  const raw = new DatabaseSync(f.path);
+  raw
+    .prepare(
+      "INSERT INTO schema_migrations(version,name,applied_at) VALUES (999,'future',0)",
+    )
+    .run();
+  raw.close();
+  assert.throws(() => f.open(), /newer than or incompatible/);
+  assert.equal(
+    readdirSync(join(f.path, "..")).filter((name) => name.includes(".pre-v"))
+      .length,
+    0,
+  );
+  const verify = new DatabaseSync(f.path, { readOnly: true });
+  assert.equal(
+    verify.prepare("SELECT COUNT(*) AS n FROM postiz_content_jobs").get()?.n,
+    1,
+  );
+  verify.close();
+});
+
+void test("explicit repair refreshes a failed snapshot or draft mode without changing source identity and preserves an audit", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  const input = repairRequest();
+  store.enqueue(input);
+  const claim = store.claimGeneration({ workerId: "old-worker", leaseMs: 100 });
+  assert.ok(claim);
+  store.completeGeneration(
+    claim.id,
+    claim.leaseToken,
+    { oldDraft: "Requires repair" },
+    "rejected",
+  );
+  const before = store.get(claim.id)!;
+  const snapshot = {
+    ...(input.input as { brand: Record<string, unknown> }).brand,
+    businessContext: "Updated verified AI tooling context",
+  };
+  f.advance(5);
+  const repaired = store.repairFailed(claim.id, {
+    reason: "Refresh verified context and require draft review",
+    actor: "operator:alice",
+    brandSnapshot: snapshot,
+    toDraft: true,
+  });
+  assert.equal(repaired.state, "queued");
+  assert.equal(repaired.mode, "draft");
+  assert.equal(repaired.scheduledAt, null);
+  assert.equal(repaired.output, null);
+  assert.equal(repaired.contentFingerprint, before.contentFingerprint);
+  assert.equal(repaired.attemptCount, before.attemptCount);
+  assert.equal(repaired.createdAt, before.createdAt);
+  const finalInput = repaired.input as Record<string, unknown>;
+  assert.deepEqual(finalInput.brand, snapshot);
+  assert.deepEqual(
+    finalInput.sources,
+    (input.input as Record<string, unknown>).sources,
+  );
+  assert.equal(finalInput.integrationId, "existing-account");
+  const [audit] = store.listAuditEvents({
+    jobId: claim.id,
+    brandId: "brand-a",
+  });
+  assert.deepEqual(audit.before, before);
+  assert.deepEqual(audit.after, repaired);
+  assert.equal(
+    audit.reason,
+    "Refresh verified context and require draft review",
+  );
+  assert.equal(audit.actor, "operator:alice");
+  assert.equal(audit.eventType, "job.repaired");
+  assert.throws(
+    () => store.enqueue({ ...input, id: "new-id-for-same-source" }),
+    JobConflictError,
+  );
+  assert.equal(store.list().length, 1);
+  assert.equal(
+    store.enqueue({
+      ...input,
+      id: "new-id-for-same-source",
+      input: repaired.input,
+      mode: "draft",
+      scheduledAt: null,
+    }).id,
+    repaired.id,
+  );
+});
+
+void test("repair and retry reject active or uncertain jobs and any stored provider receipt", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  const raw = new DatabaseSync(f.path);
+  t.after(() => raw.close());
+  for (const state of [
+    "queued",
+    "processing",
+    "ready",
+    "submitting",
+    "submitted",
+    "unknown",
+  ]) {
+    store.enqueue(repairRequest(state));
+    raw
+      .prepare("UPDATE postiz_content_jobs SET state = ? WHERE id = ?")
+      .run(state, state);
+    assert.throws(
+      () =>
+        store.repairFailed(state, { reason: "Cannot reset", toDraft: true }),
+      JobConflictError,
+    );
+    assert.throws(() => store.retry(state), JobConflictError);
+  }
+  for (const [index, column] of [
+    "postiz_id",
+    "platform_post_id",
+    "platform_url",
+  ].entries()) {
+    const id = `receipt-${index}`;
+    store.enqueue(repairRequest(id));
+    raw
+      .prepare(
+        `UPDATE postiz_content_jobs SET state = 'failed', ${column} = ? WHERE id = ?`,
+      )
+      .run(`known-${index}`, id);
+    assert.throws(
+      () =>
+        store.repairFailed(id, { reason: "Must keep receipt", toDraft: true }),
+      JobConflictError,
+    );
+    assert.throws(() => store.retry(id), JobConflictError);
+  }
+  assert.equal(store.listAuditEvents().length, 0);
+});
+
+void test("invalid repaired brands or sources and failed audit writes leave the job unchanged", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  store.enqueue(repairRequest());
+  const claim = store.claimGeneration({ workerId: "worker", leaseMs: 100 });
+  assert.ok(claim);
+  const before = store.failGeneration(
+    claim.id,
+    claim.leaseToken,
+    "Draft-only mode blocks old schedule",
+  );
+  assert.throws(
+    () =>
+      store.repairFailed(claim.id, {
+        reason: "Wrong brand",
+        brandSnapshot: { id: "other-brand" },
+      }),
+    JobConflictError,
+  );
+  assert.throws(() =>
+    store.repairFailed(claim.id, {
+      reason: "Incomplete brand",
+      brandSnapshot: { id: "brand-a" },
+    }),
+  );
+  assert.throws(
+    () =>
+      store.repairFailed(claim.id, {
+        reason: "Audit actor invalid",
+        actor: "",
+        toDraft: true,
+      }),
+    /actor/,
+  );
+  assert.deepEqual(store.get(claim.id), before);
+  assert.equal(store.listAuditEvents().length, 0);
+  const raw = new DatabaseSync(f.path);
+  const invalid = {
+    ...(before.input as Record<string, unknown>),
+    sources: [{ url: "http://127.0.0.1/private" }],
+  };
+  raw
+    .prepare("UPDATE postiz_content_jobs SET input_json = ? WHERE id = ?")
+    .run(JSON.stringify(invalid), claim.id);
+  raw.close();
+  assert.throws(() =>
+    store.repairFailed(claim.id, {
+      reason: "Mode-only still checks sources",
+      toDraft: true,
+    }),
+  );
+  assert.equal(store.get(claim.id)?.state, "failed");
+  assert.equal(store.get(claim.id)?.mode, "schedule");
 });

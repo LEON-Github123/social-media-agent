@@ -327,7 +327,114 @@ void test("invalid calendar dates and timezone-less schedules are rejected befor
     "2030-03-01T24:00:00Z",
     "2030-03-01T12:00:00",
   ])
-    assert.throws(() => enqueueContent(store, input, date), /ISO/);
+    assert.throws(
+      () => enqueueContent(store, input, date, { allowScheduling: true }),
+      /ISO/,
+    );
+});
+
+void test("new and persisted schedules require explicit draft repair before generation or submission", async (t) => {
+  const { store } = setup(t);
+  const scheduledInput = {
+    ...input,
+    sources: [
+      {
+        url: "https://example.com/scheduled",
+        text: "A separate developer release.",
+      },
+    ],
+  };
+  const date = "2099-01-01T00:00:00Z";
+  assert.throws(
+    () => enqueueContent(store, scheduledInput, date),
+    /Scheduling is disabled/,
+  );
+  const old = enqueueContent(store, scheduledInput, date, {
+    allowScheduling: true,
+  });
+  let generations = 0;
+  const generate = async () => {
+    generations++;
+    return output;
+  };
+  const blocked = await generateNext({
+    store,
+    brandId: brand.id,
+    jobId: old.id,
+    leaseMs: 30_000,
+    generate,
+  });
+  assert.equal(blocked?.state, "failed");
+  assert.equal(generations, 0);
+  assert.match(blocked!.lastError!, /Scheduling is disabled/);
+
+  // A task already generated before the switch was closed is gated as well.
+  store.retry(old.id);
+  await generateNext({
+    store,
+    brandId: brand.id,
+    jobId: old.id,
+    leaseMs: 30_000,
+    generate,
+    allowScheduling: true,
+  });
+  let requests = 0;
+  const client = new PostizClient({
+    baseUrl: "http://postiz.test/api/public/v1",
+    apiKey: "test",
+    fetch: async () => {
+      requests++;
+      throw new Error("Must not call Postiz");
+    },
+  });
+  const failed = await submitNext({
+    store,
+    client,
+    brandId: brand.id,
+    jobId: old.id,
+    leaseMs: 30_000,
+  });
+  assert.equal(failed?.state, "failed");
+  assert.equal(requests, 0);
+
+  const repaired = store.repairFailed(old.id, {
+    toDraft: true,
+    reason: "Review in Postiz first",
+    brandSnapshot: {
+      ...brand,
+      contentRules: ["Use a practical developer example"],
+    },
+  });
+  assert.equal(repaired.state, "queued");
+  assert.equal(repaired.mode, "draft");
+  assert.equal(repaired.output, null);
+  await generateNext({
+    store,
+    brandId: brand.id,
+    jobId: old.id,
+    leaseMs: 30_000,
+    generate: async (revised) => {
+      assert.deepEqual(revised.brand.contentRules, [
+        "Use a practical developer example",
+      ]);
+      return output;
+    },
+  });
+  const remote = api();
+  assert.equal(
+    (
+      await submitNext({
+        store,
+        client: remote.client,
+        brandId: brand.id,
+        jobId: old.id,
+        leaseMs: 30_000,
+      })
+    )?.state,
+    "submitted",
+  );
+  assert.equal(remote.creates(), 1);
+  assert.equal(store.listAuditEvents({ jobId: old.id }).length, 2);
 });
 
 void test("a failed quality review never enters the publication queue", async (t) => {
@@ -357,4 +464,40 @@ void test("a failed quality review never enters the publication queue", async (t
     null,
   );
   assert.equal(remote.creates(), 0);
+});
+
+void test("historical approved output is rechecked for current source attribution before any API call", async (t) => {
+  const { store, job } = setup(t);
+  const claim = store.claimGeneration({
+    workerId: "old-version",
+    leaseMs: 30_000,
+    jobId: job.id,
+  })!;
+  store.completeGeneration(
+    job.id,
+    claim.leaseToken,
+    {
+      ...output,
+      post: "Read our API documentation. https://docs.tokenhot.ai/general",
+    },
+    "ready",
+  );
+  let calls = 0;
+  const client = new PostizClient({
+    baseUrl: "http://postiz.test/api/public/v1",
+    apiKey: "test",
+    fetch: async () => {
+      calls++;
+      throw new Error("Must not request");
+    },
+  });
+  const result = await submitNext({
+    store,
+    client,
+    brandId: brand.id,
+    leaseMs: 30_000,
+  });
+  assert.equal(result?.state, "failed");
+  assert.match(result!.lastError!, /must link to a supplied source/);
+  assert.equal(calls, 0);
 });

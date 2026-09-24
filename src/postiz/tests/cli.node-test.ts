@@ -13,6 +13,12 @@ const execute = promisify(execFile);
 void test("configuration rejects invalid automation controls and strips known credentials from errors", () => {
   assert.equal(readConfig({}).discoveryIntervalMs, 86_400_000);
   assert.equal(readConfig({ CONTENT_AUTO_SUBMIT: "false" }).autoSubmit, false);
+  assert.equal(readConfig({}).allowScheduling, false);
+  assert.equal(
+    readConfig({ CONTENT_ALLOW_SCHEDULING: "true" }).allowScheduling,
+    true,
+  );
+  assert.throws(() => readConfig({ CONTENT_ALLOW_SCHEDULING: "yes" }));
   assert.throws(() => readConfig({ CONTENT_AUTO_SUBMIT: "yes" }));
   assert.throws(() => readConfig({ CONTENT_MAX_JOBS_PER_TICK: "NaN" }));
   assert.throws(() => readConfig({ CONTENT_MODEL_PROVIDER: "unknown" }));

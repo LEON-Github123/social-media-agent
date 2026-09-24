@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { migrateContentDatabase } from "./migrations.js";
+import { validateJobInput } from "./validation.js";
 
 export type ContentJobState =
   | "queued"
@@ -67,6 +69,31 @@ export interface PostizReceipt {
   platformUrl?: string;
 }
 
+export interface OperatorAction {
+  reason?: string;
+  actor?: string;
+}
+
+export interface RepairFailedJob {
+  reason: string;
+  actor?: string;
+  /** Replaces only input.brand; source and account identities stay fixed. */
+  brandSnapshot?: unknown;
+  toDraft?: boolean;
+}
+
+export interface AuditEvent {
+  id: string;
+  jobId: string | null;
+  brandId: string;
+  eventType: string;
+  actor: string;
+  reason: string;
+  before: unknown | null;
+  after: unknown | null;
+  createdAt: number;
+}
+
 export class LeaseLostError extends Error {
   constructor(id: string) {
     super(`Content job ${id} is no longer owned by this lease`);
@@ -111,45 +138,25 @@ function nullableText(value: unknown): string | null {
 export class ContentJobStore {
   private readonly db: DatabaseSync;
   private readonly now: () => number;
+  readonly migrationBackupPath: string | null;
 
   constructor(path: string, options: { now?: () => number } = {}) {
     this.now = options.now ?? Date.now;
     this.db = new DatabaseSync(path);
-    this.db.exec(`
-      PRAGMA busy_timeout = 5000;
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      CREATE TABLE IF NOT EXISTS postiz_content_jobs (
-        id TEXT PRIMARY KEY,
-        brand_id TEXT NOT NULL,
-        content_fingerprint TEXT NOT NULL,
-        input_json TEXT NOT NULL,
-        output_json TEXT,
-        state TEXT NOT NULL CHECK (state IN (
-          'queued','processing','ready','rejected','submitting',
-          'submitted','unknown','failed'
-        )),
-        mode TEXT NOT NULL CHECK (mode IN ('draft','schedule')),
-        scheduled_at TEXT,
-        postiz_id TEXT,
-        postiz_state TEXT,
-        platform_post_id TEXT,
-        platform_url TEXT,
-        last_error TEXT,
-        failure_phase TEXT CHECK (failure_phase IN ('generation','submission')),
-        lease_token TEXT,
-        lease_owner TEXT,
-        lease_expires_at INTEGER,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        UNIQUE (brand_id, content_fingerprint)
-      );
-      CREATE INDEX IF NOT EXISTS postiz_content_jobs_claim
-        ON postiz_content_jobs (brand_id, state, created_at, id);
-      CREATE UNIQUE INDEX IF NOT EXISTS postiz_content_jobs_receipt
-        ON postiz_content_jobs (postiz_id) WHERE postiz_id IS NOT NULL;
-    `);
+    try {
+      this.db.exec(`
+        PRAGMA busy_timeout = 5000;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+      `);
+      this.migrationBackupPath = migrateContentDatabase(this.db, {
+        databasePath: path,
+        now: this.now,
+      }).backupPath;
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -206,6 +213,71 @@ export class ContentJobStore {
     const job = this.get(id);
     if (!job) throw new JobConflictError(`Content job ${id} does not exist`);
     return job;
+  }
+
+  private auditJob(
+    eventType: string,
+    before: ContentJob,
+    after: ContentJob,
+    action: { reason: string; actor?: string },
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO audit_events (
+          id, job_id, brand_id, event_type, actor, reason,
+          before_json, after_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        before.id,
+        before.brandId,
+        eventType,
+        requiredText(action.actor ?? "operator", "actor"),
+        requiredText(action.reason, "reason"),
+        json(before),
+        json(after),
+        this.now(),
+      );
+  }
+
+  listAuditEvents(
+    options: { jobId?: string; brandId?: string; limit?: number } = {},
+  ): AuditEvent[] {
+    const filters: string[] = [];
+    const values: BindValue[] = [];
+    if (options.jobId !== undefined) {
+      filters.push("job_id = ?");
+      values.push(options.jobId);
+    }
+    if (options.brandId !== undefined) {
+      filters.push("brand_id = ?");
+      values.push(options.brandId);
+    }
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000) {
+      throw new TypeError("limit must be an integer between 1 and 10000");
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM audit_events
+         ${filters.length ? `WHERE ${filters.join(" AND ")}` : ""}
+         ORDER BY created_at, rowid LIMIT ?`,
+      )
+      .all(...values, limit)
+      .map((row) => ({
+        id: String(row.id),
+        jobId: nullableText(row.job_id),
+        brandId: String(row.brand_id),
+        eventType: String(row.event_type),
+        actor: String(row.actor),
+        reason: String(row.reason),
+        before:
+          row.before_json === null ? null : JSON.parse(String(row.before_json)),
+        after:
+          row.after_json === null ? null : JSON.parse(String(row.after_json)),
+        createdAt: Number(row.created_at),
+      }));
   }
 
   list(
@@ -532,12 +604,10 @@ export class ContentJobStore {
   }
 
   /** Explicit operator action. Unknown submissions can never be retried here. */
-  retry(id: string): ContentJob {
+  retry(id: string, action: OperatorAction = {}): ContentJob {
     return this.transaction(() => {
       const job = this.requireJob(id);
-      if (job.state !== "failed" && job.state !== "rejected") {
-        throw new JobConflictError(`Cannot retry a ${job.state} content job`);
-      }
+      this.requireRepairable(job);
       const state =
         job.state === "failed" && job.failurePhase === "submission"
           ? "ready"
@@ -551,7 +621,85 @@ export class ContentJobStore {
       `,
         )
         .run(state, state, this.now(), id);
-      return this.requireJob(id);
+      const after = this.requireJob(id);
+      this.auditJob("job.retried", job, after, {
+        ...action,
+        reason: action.reason ?? "Explicit operator retry",
+      });
+      return after;
+    });
+  }
+
+  private requireRepairable(job: ContentJob): void {
+    if (
+      !["failed", "rejected"].includes(job.state) ||
+      job.postizId !== null ||
+      job.platformPostId !== null ||
+      job.platformUrl !== null
+    ) {
+      throw new JobConflictError(
+        "Only failed or rejected jobs without a provider receipt can be repaired or retried",
+      );
+    }
+  }
+
+  /**
+   * Explicit repair never creates a new identity or releases deduplication.
+   * Regeneration is required after every repair; the audit retains the old
+   * output and errors even when the live job is reset to queued.
+   */
+  repairFailed(id: string, options: RepairFailedJob): ContentJob {
+    requiredText(options.reason, "reason");
+    if (options.toDraft !== undefined && typeof options.toDraft !== "boolean") {
+      throw new TypeError("toDraft must be a boolean");
+    }
+    return this.transaction(() => {
+      const before = this.requireJob(id);
+      this.requireRepairable(before);
+      const original = before.input;
+      if (
+        !original ||
+        typeof original !== "object" ||
+        Array.isArray(original)
+      ) {
+        throw new JobConflictError(
+          "Cannot repair a job with invalid persisted input",
+        );
+      }
+      const input = { ...(original as Record<string, unknown>) };
+      if (options.brandSnapshot !== undefined)
+        input.brand = options.brandSnapshot;
+      const brand = input.brand;
+      if (
+        !brand ||
+        typeof brand !== "object" ||
+        Array.isArray(brand) ||
+        (brand as Record<string, unknown>).id !== before.brandId
+      ) {
+        throw new JobConflictError(
+          "A repaired brand snapshot must keep the job's brand ID",
+        );
+      }
+      // Shared validation checks the final snapshot and its existing sources
+      // even for a mode-only repair. Preserve account and source values as stored.
+      input.brand = validateJobInput(input).brand;
+      this.db
+        .prepare(
+          `UPDATE postiz_content_jobs SET input_json = ?, mode = ?, scheduled_at = ?,
+            state = 'queued', output_json = NULL, last_error = NULL,
+            failure_phase = NULL, lease_token = NULL, lease_owner = NULL,
+            lease_expires_at = NULL, updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          json(input),
+          options.toDraft ? "draft" : before.mode,
+          options.toDraft ? null : before.scheduledAt,
+          this.now(),
+          id,
+        );
+      const after = this.requireJob(id);
+      this.auditJob("job.repaired", before, after, options);
+      return after;
     });
   }
 

@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { BrandConfig, ContentResult } from "./content.js";
-import { brandSchema, safeError } from "./config.js";
+import {
+  validatePost,
+  type BrandConfig,
+  type ContentResult,
+} from "./content.js";
+import { safeError } from "./config.js";
+import { validateJobInput, validateSourceDocuments } from "./validation.js";
 import {
   ContentJobStore,
   type ContentJob,
@@ -45,18 +50,13 @@ export function enqueueContent(
   store: ContentJobStore,
   input: JobInput,
   scheduledAt?: string,
+  options: { allowScheduling?: boolean } = {},
 ): ContentJob {
-  brandSchema.parse(input.brand);
-  if (!input.integrationId.trim())
-    throw new Error(
-      "Set POSTIZ_INTEGRATION_ID before enqueueing a publishable job (use preview for content-only generation)",
-    );
-  if (!input.sources.length || input.sources.length > 8)
-    throw new Error("A content job needs between 1 and 8 source documents");
-  if (input.mediaPaths.length > 4)
-    throw new Error(
-      "At most four media files are supported; platform-specific combinations still apply",
-    );
+  input = validateJobInput(input);
+  assertSchedulingAllowed(
+    scheduledAt ? "schedule" : "draft",
+    options.allowScheduling,
+  );
   const normalizedSources = input.sources.map((source) => ({
     ...source,
     url: normalizeSourceUrl(source.url),
@@ -109,17 +109,19 @@ export function enqueueContent(
   });
 }
 
+export function assertSchedulingAllowed(
+  mode: string,
+  allowScheduling = false,
+): void {
+  if (mode === "schedule" && !allowScheduling) {
+    throw new Error(
+      "Scheduling is disabled. Explicitly repair this task with retry --to-draft --reason REASON, then review and schedule the draft in Postiz.",
+    );
+  }
+}
+
 function jobInput(job: ContentJob): JobInput {
-  const input = job.input as JobInput;
-  if (
-    !input ||
-    typeof input.integrationId !== "string" ||
-    !input.integrationId ||
-    !Array.isArray(input.sources) ||
-    !Array.isArray(input.mediaPaths)
-  )
-    throw new Error("Invalid persisted job input");
-  brandSchema.parse(input.brand);
+  const input = validateJobInput(job.input);
   if (input.brand.id !== job.brandId)
     throw new Error("Job brand does not match its content snapshot");
   return input;
@@ -172,6 +174,7 @@ export async function generateNext(options: {
   brandId: string;
   leaseMs: number;
   jobId?: string;
+  allowScheduling?: boolean;
   generate: (input: JobInput) => Promise<ContentResult>;
 }): Promise<ContentJob | null> {
   const { store, leaseMs } = options;
@@ -183,6 +186,7 @@ export async function generateNext(options: {
   });
   if (!claimed) return null;
   try {
+    assertSchedulingAllowed(claimed.mode, options.allowScheduling);
     const result = await withHeartbeat(store, claimed, leaseMs, () =>
       options.generate(jobInput(claimed)),
     );
@@ -212,6 +216,7 @@ export async function submitNext(options: {
   brandId: string;
   leaseMs: number;
   jobId?: string;
+  allowScheduling?: boolean;
 }): Promise<ContentJob | null> {
   const { store, client, leaseMs } = options;
   const claimed = store.claimSubmit({
@@ -223,9 +228,18 @@ export async function submitNext(options: {
   if (!claimed) return null;
   let createStarted = false;
   try {
+    assertSchedulingAllowed(claimed.mode, options.allowScheduling);
     const receipt = await withHeartbeat(store, claimed, leaseMs, async () => {
       const input = jobInput(claimed);
       const output = jobOutput(claimed);
+      const reasons = validatePost(output.post, {
+        brand: input.brand,
+        sources: validateSourceDocuments(output.sources),
+      });
+      if (reasons.length)
+        throw new Error(
+          `Current submission checks failed: ${reasons.join("; ")}. Use retry --refresh-brand --reason TEXT to regenerate.`,
+        );
       const integration = (await client.listIntegrations()).find(
         (item) => item.id === input.integrationId,
       );

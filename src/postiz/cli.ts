@@ -8,6 +8,7 @@ import { config as loadEnv } from "dotenv";
 import { loadBrand, readConfig, safeError } from "./config.js";
 import { createContentModel } from "./models.js";
 import { generateContent } from "./content.js";
+import { validateSourceInputs } from "./validation.js";
 import {
   ContentJobStore,
   type ContentJob,
@@ -26,6 +27,7 @@ import {
   submitNext,
   syncJob,
   syncSubmitted,
+  assertSchedulingAllowed,
 } from "./runner.js";
 
 const HELP = `Content worker for Postiz (Node.js 24+)
@@ -37,7 +39,8 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli discover
   yarn postiz:cli work [--once] [--no-submit]
   yarn postiz:cli show [--id CONTENT_ID]
-  yarn postiz:cli retry --id CONTENT_ID
+  yarn postiz:cli retry --id CONTENT_ID [--refresh-brand] [--to-draft] [--reason TEXT]
+  yarn postiz:cli history --id CONTENT_ID
   yarn postiz:cli submit --id CONTENT_ID
   yarn postiz:cli sync --id CONTENT_ID [--postiz-id EXISTING_ID]
   yarn postiz:cli integrations
@@ -45,7 +48,8 @@ const HELP = `Content worker for Postiz (Node.js 24+)
 Configuration: .env.postiz or CONTENT_ENV_FILE, plus CONTENT_BRAND_FILE.
 preview calls only source/model services. enqueue records a job, without API calls.
 work processes at most CONTENT_MAX_JOBS_PER_TICK and defaults to Postiz drafts.
---schedule is only valid at enqueue time and must include a timezone.
+Scheduling is disabled by default, including for tasks already in the database.
+Use retry --to-draft --reason TEXT to repair a failed scheduled task explicitly.
 Use Postiz to edit/promote an existing draft; do not enqueue it again.
 Unknown submissions cannot be retried. Inspect Postiz, then sync the existing ID.
 `;
@@ -88,6 +92,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       id: { type: "string" },
       "postiz-id": { type: "string" },
       state: { type: "string" },
+      "refresh-brand": { type: "boolean" },
+      "to-draft": { type: "boolean" },
+      reason: { type: "string" },
     },
   });
   const command = positionals[0];
@@ -105,6 +112,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     "submit",
     "sync",
     "integrations",
+    "history",
   ]);
   if (!commands.has(command) || positionals.length !== 1)
     throw new Error("Unknown command; use --help");
@@ -114,7 +122,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     discover: [],
     work: ["once", "no-submit"],
     show: ["id", "state"],
-    retry: ["id"],
+    retry: ["id", "refresh-brand", "to-draft", "reason"],
+    history: ["id"],
     submit: ["id"],
     sync: ["id", "postiz-id"],
     integrations: [],
@@ -142,7 +151,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const client = () => {
     if (!config.postiz.apiKey)
       throw new Error("Set POSTIZ_API_KEY for this operation");
-    return new PostizClient(config.postiz);
+    return new PostizClient({
+      ...config.postiz,
+      allowScheduling: config.allowScheduling,
+    });
   };
   if (command === "integrations") {
     console.log(JSON.stringify(await client().listIntegrations(), null, 2));
@@ -162,11 +174,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       if (values.url?.length || values["text-file"])
         throw new Error("Use --input-json or --url, not both");
       const input = await readJsonFile(values["input-json"]);
-      if (!Array.isArray(input) || !input.length || input.length > 8)
-        throw new Error(
-          "--input-json must contain an array of 1–8 source objects",
-        );
-      return input as SourceInput[];
+      return validateSourceInputs(input);
     }
     const urls = values.url || [];
     if (!urls.length || urls.length > 8)
@@ -176,10 +184,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const text = values["text-file"]
       ? await readLocalText(values["text-file"])
       : undefined;
-    return urls.map((url) => ({
-      url,
-      ...(text === undefined ? {} : { text }),
-    }));
+    return validateSourceInputs(
+      urls.map((url) => ({
+        url,
+        ...(text === undefined ? {} : { text }),
+      })),
+    );
   };
 
   const loadDocuments = async (inputs: SourceInput[]) => {
@@ -242,6 +252,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
           mediaPaths: (values.media || []).map((path) => resolve(path)),
         },
         values.schedule,
+        { allowScheduling: config.allowScheduling },
       );
       console.log(JSON.stringify(summary(job), null, 2));
     } else if (command === "show") {
@@ -278,8 +289,29 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         ),
       );
     } else if (command === "retry") {
+      const job = requiredJob();
+      const repairing = values["refresh-brand"] || values["to-draft"];
+      if (repairing && !values.reason?.trim())
+        throw new Error("Explicit task repairs require --reason TEXT");
+      assertSchedulingAllowed(
+        values["to-draft"] ? "draft" : job.mode,
+        config.allowScheduling,
+      );
+      const result = repairing
+        ? store.repairFailed(job.id, {
+            reason: values.reason!,
+            ...(values["refresh-brand"] ? { brandSnapshot: brand } : {}),
+            toDraft: values["to-draft"] === true,
+          })
+        : store.retry(job.id, { reason: values.reason });
+      console.log(JSON.stringify(summary(result), null, 2));
+    } else if (command === "history") {
       console.log(
-        JSON.stringify(summary(store.retry(requiredJob().id)), null, 2),
+        JSON.stringify(
+          store.listAuditEvents({ jobId: requiredJob().id, brandId: brand.id }),
+          null,
+          2,
+        ),
       );
     } else if (command === "discover") {
       if (!config.sourcesFile)
@@ -297,6 +329,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         brandId: brand.id,
         leaseMs: config.leaseMs,
         jobId: job.id,
+        allowScheduling: config.allowScheduling,
       });
       if (!result) throw new Error("Another worker already claimed this job");
       console.log(JSON.stringify(summary(result), null, 2));
@@ -346,6 +379,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
                 store,
                 brandId: brand.id,
                 leaseMs: config.leaseMs,
+                allowScheduling: config.allowScheduling,
                 generate: async (input) =>
                   generateContent(
                     {
@@ -371,6 +405,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
                   client: publisher,
                   brandId: brand.id,
                   leaseMs: config.leaseMs,
+                  allowScheduling: config.allowScheduling,
                 });
                 if (!result) break;
                 console.log(JSON.stringify(summary(result)));

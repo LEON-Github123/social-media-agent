@@ -1,25 +1,11 @@
 import { readLocalText } from "./files.js";
 import { resolve } from "node:path";
-import { z } from "zod";
-import type { BrandConfig } from "./content.js";
+import { validateBrand, type BrandConfig } from "./validation.js";
 
-const nonEmpty = z.string().trim().min(1);
-export const brandSchema = z.object({
-  id: nonEmpty.regex(/^[a-zA-Z0-9_-]+$/),
-  name: nonEmpty,
-  audience: nonEmpty,
-  businessContext: nonEmpty,
-  contentRules: z.array(nonEmpty).default([]),
-  examples: z.array(nonEmpty).default([]),
-  language: nonEmpty.default("English"),
-  verifiedFacts: z
-    .array(z.object({ claim: nonEmpty, url: z.string().url() }))
-    .default([]),
-  maxPostLength: z.number().int().min(30).max(280).default(280),
-});
+export { brandSchema } from "./validation.js";
 
 export async function loadBrand(path: string): Promise<BrandConfig> {
-  return brandSchema.parse(JSON.parse(await readLocalText(path)));
+  return validateBrand(JSON.parse(await readLocalText(path)));
 }
 
 export interface WorkerConfig {
@@ -48,6 +34,7 @@ export interface WorkerConfig {
   discoveryIntervalMs: number;
   maxJobsPerTick: number;
   autoSubmit: boolean;
+  allowScheduling: boolean;
   leaseMs: number;
 }
 
@@ -74,6 +61,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const autoSubmit = env.CONTENT_AUTO_SUBMIT || "true";
   if (autoSubmit !== "true" && autoSubmit !== "false")
     throw new Error("CONTENT_AUTO_SUBMIT must be true or false");
+  const allowScheduling = env.CONTENT_ALLOW_SCHEDULING || "false";
+  if (allowScheduling !== "true" && allowScheduling !== "false")
+    throw new Error("CONTENT_ALLOW_SCHEDULING must be true or false");
   return {
     brandFile: resolve(
       env.CONTENT_BRAND_FILE || "config/postiz/brand.example.json",
@@ -130,6 +120,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     ),
     maxJobsPerTick: positiveInt(env, "CONTENT_MAX_JOBS_PER_TICK", 3, 1, 100),
     autoSubmit: autoSubmit === "true",
+    allowScheduling: allowScheduling === "true",
     leaseMs: positiveInt(env, "CONTENT_LEASE_MS", 300_000, 30_000, 3_600_000),
   };
 }

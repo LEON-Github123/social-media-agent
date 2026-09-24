@@ -8,6 +8,8 @@ export interface PostizClientOptions {
   apiKey: string;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** Off by default. Normal operation sends drafts for review in Postiz. */
+  allowScheduling?: boolean;
 }
 
 export interface PostizIntegration {
@@ -152,6 +154,7 @@ export class PostizClient {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly allowScheduling: boolean;
 
   constructor(options: PostizClientOptions) {
     let url: URL;
@@ -183,6 +186,7 @@ export class PostizClient {
     this.apiKey = options.apiKey;
     this.timeoutMs = timeoutMs;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.allowScheduling = options.allowScheduling === true;
   }
 
   private async request(
@@ -317,6 +321,11 @@ export class PostizClient {
       invalidInput("A Postiz integration ID is required.");
     if (input.mode !== "draft" && input.mode !== "schedule") {
       invalidInput("Only draft and schedule modes are supported.");
+    }
+    if (input.mode === "schedule" && !this.allowScheduling) {
+      invalidInput(
+        "Scheduling is disabled. Create a draft and review it in Postiz.",
+      );
     }
     const parts = Array.isArray(input.content)
       ? input.content

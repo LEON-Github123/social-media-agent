@@ -21,7 +21,7 @@ interface RecordedRequest {
   options: RequestInit;
 }
 
-function setup(responses: Array<Response | Error>) {
+function setup(responses: Array<Response | Error>, allowScheduling = false) {
   const calls: RecordedRequest[] = [];
   const fetchImpl: typeof globalThis.fetch = async (url, options = {}) => {
     calls.push({ url: String(url), options });
@@ -35,6 +35,7 @@ function setup(responses: Array<Response | Error>) {
       baseUrl: `${API_URL}/`,
       apiKey: API_KEY,
       fetch: fetchImpl,
+      allowScheduling,
     }),
     calls,
   };
@@ -114,9 +115,10 @@ void test("schedules a thread in UTC and associates upload receipts with its fir
   const media = [
     { id: "media-1", path: "https://postiz.example.com/uploads/image.png" },
   ];
-  const { client, calls } = setup([
-    json([{ postId: "thread-1", integration: "x-123" }]),
-  ]);
+  const { client, calls } = setup(
+    [json([{ postId: "thread-1", integration: "x-123" }])],
+    true,
+  );
   await client.createPost({
     integrationId: "x-123",
     content: ["First part", "Second part"],
@@ -131,6 +133,20 @@ void test("schedules a thread in UTC and associates upload receipts with its fir
     { content: "First part", image: media },
     { content: "Second part", image: [] },
   ]);
+});
+
+void test("the Postiz API adapter denies scheduled writes by default before any request", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(
+    client.createPost({
+      integrationId: "x-123",
+      content: "A reviewed release.",
+      mode: "schedule",
+      scheduledAt: FUTURE,
+    }),
+    /Scheduling is disabled/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 void test("rejects immediate publishing, unsafe dates and empty content before any network call", async () => {
