@@ -372,6 +372,7 @@ void test("oldest-updated ordering rotates submitted sync batches after recordin
   const f = fixture(t);
   const store = f.open();
   for (const id of ["one", "two", "three", "four"]) {
+    if (id === "four") f.advance(86_400_000);
     ready(store, id);
     const claim = store.claimSubmit({
       workerId: "publisher",
@@ -426,6 +427,7 @@ void test("missing remote results rotate after a sync check without inferring a 
   const f = fixture(t);
   const store = f.open();
   for (const id of ["one", "two", "three", "four"]) {
+    if (id === "four") f.advance(86_400_000);
     ready(store, id);
     const claim = store.claimSubmit({
       workerId: "publisher",
@@ -594,9 +596,15 @@ void test("versioned migrations preserve every legacy state and create a WAL-con
   f.close(initial);
   const legacy = new DatabaseSync(f.path);
   t.after(() => legacy.close());
-  legacy.exec(
-    "PRAGMA journal_mode = WAL; DROP TABLE audit_events; DROP TABLE schema_migrations;",
-  );
+  legacy.exec("PRAGMA journal_mode = WAL;");
+  // Recreate the original unversioned installation regardless of later tables.
+  for (const row of legacy
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name != 'postiz_content_jobs' AND name NOT LIKE 'sqlite_%'",
+    )
+    .all()) {
+    legacy.exec(`DROP TABLE "${String(row.name).replaceAll('"', '""')}"`);
+  }
   const states = [
     "queued",
     "processing",

@@ -2,6 +2,24 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateContentDatabase } from "./migrations.js";
 import { validateJobInput } from "./validation.js";
+import {
+  ContentOperationsStore,
+  type GenerationQuotaOptions,
+} from "./operations-store.js";
+import { JobConflictError, LeaseLostError } from "./store-errors.js";
+export { JobConflictError, LeaseLostError } from "./store-errors.js";
+export type {
+  ContentCandidate,
+  ContentTopic,
+  SourceCheckpoint,
+  SourceCheckpointState,
+  GenerationQuota,
+  GenerationAttempt,
+  SelectionModelCall,
+  GenerationQuotaOptions,
+  CandidateStatus,
+  CandidateBatch,
+} from "./operations-store.js";
 
 export type ContentJobState =
   | "queued"
@@ -60,6 +78,8 @@ export interface ClaimContentJob {
   leaseMs: number;
   jobId?: string;
   brandId?: string;
+  /** Applied to generation claims only; hard maximum is three starts per day. */
+  quota?: GenerationQuotaOptions;
 }
 
 export interface PostizReceipt {
@@ -94,20 +114,6 @@ export interface AuditEvent {
   createdAt: number;
 }
 
-export class LeaseLostError extends Error {
-  constructor(id: string) {
-    super(`Content job ${id} is no longer owned by this lease`);
-    this.name = "LeaseLostError";
-  }
-}
-
-export class JobConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "JobConflictError";
-  }
-}
-
 type BindValue = string | number | null;
 type Row = Record<string, unknown>;
 
@@ -135,44 +141,33 @@ function nullableText(value: unknown): string | null {
  * A submission lease is committed before POST /posts. If its outcome is lost,
  * recovery quarantines the job instead of repeating that non-idempotent POST.
  */
-export class ContentJobStore {
-  private readonly db: DatabaseSync;
-  private readonly now: () => number;
+export class ContentJobStore extends ContentOperationsStore {
   readonly migrationBackupPath: string | null;
 
   constructor(path: string, options: { now?: () => number } = {}) {
-    this.now = options.now ?? Date.now;
-    this.db = new DatabaseSync(path);
+    const now = options.now ?? Date.now;
+    const db = new DatabaseSync(path);
+    let backupPath: string | null;
     try {
-      this.db.exec(`
+      db.exec(`
         PRAGMA busy_timeout = 5000;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
       `);
-      this.migrationBackupPath = migrateContentDatabase(this.db, {
+      backupPath = migrateContentDatabase(db, {
         databasePath: path,
-        now: this.now,
+        now,
       }).backupPath;
     } catch (error) {
-      this.db.close();
+      db.close();
       throw error;
     }
+    super(db, now);
+    this.migrationBackupPath = backupPath;
   }
 
   close(): void {
     this.db.close();
-  }
-
-  private transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const result = fn();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
   }
 
   private fromRow(row: Row): ContentJob {
@@ -410,16 +405,34 @@ export class ContentJobStore {
         filters.push("brand_id = ?");
         values.push(options.brandId);
       }
+      // Writing starts use the persisted evidence score. Legacy jobs without a
+      // selected topic have score zero; submission order remains oldest first.
+      const order =
+        to === "processing"
+          ? `(SELECT COALESCE(MAX(CAST(json_extract(evidence.value, '$.totalScore') AS REAL)), 0)
+            FROM content_topics topic, json_each(topic.source_metadata_json) evidence
+            WHERE topic.job_id = postiz_content_jobs.id AND topic.merged_into_topic_id IS NULL) DESC, created_at, id`
+          : "created_at, id";
       const row = this.db
         .prepare(
           `
-        SELECT id FROM postiz_content_jobs WHERE ${filters.join(" AND ")}
-        ORDER BY created_at, id LIMIT 1
+        SELECT id,brand_id FROM postiz_content_jobs WHERE ${filters.join(" AND ")}
+        ORDER BY ${order} LIMIT 1
       `,
         )
         .get(...values);
       if (!row) return null;
       const id = String(row.id);
+      if (
+        to === "processing" &&
+        !this.reserveWritingAttempt({
+          ...options.quota,
+          brandId: String(row.brand_id),
+          jobId: id,
+          kind: "generation",
+        })
+      )
+        return null;
       const now = this.now();
       const result = this.db
         .prepare(

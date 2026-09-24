@@ -2,7 +2,13 @@ import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
-export type ContentTask = "relevance" | "report" | "post" | "quality";
+export type ContentTask =
+  | "relevance"
+  | "report"
+  | "post"
+  | "quality"
+  | "selection"
+  | "selection_review";
 
 export interface ModelRequest {
   task: ContentTask;

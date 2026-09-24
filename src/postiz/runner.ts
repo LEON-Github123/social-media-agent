@@ -19,31 +19,14 @@ import {
   type PostizPost,
 } from "./postiz-client.js";
 import type { SourceInput } from "./sources.js";
+import { normalizeSourceUrl } from "./identity.js";
+export { normalizeSourceUrl } from "./identity.js";
 
 export interface JobInput {
   brand: BrandConfig;
   sources: SourceInput[];
   integrationId: string;
   mediaPaths: string[];
-}
-
-export function normalizeSourceUrl(value: string): string {
-  const url = new URL(value);
-  if (
-    !["http:", "https:"].includes(url.protocol) ||
-    url.username ||
-    url.password
-  )
-    throw new Error(
-      "Sources must be HTTP(S) URLs without embedded credentials",
-    );
-  url.hash = "";
-  for (const key of [...url.searchParams.keys()]) {
-    if (/^utm_/i.test(key) || ["fbclid", "gclid"].includes(key.toLowerCase()))
-      url.searchParams.delete(key);
-  }
-  url.searchParams.sort();
-  return url.toString();
 }
 
 export function enqueueContent(
@@ -175,6 +158,7 @@ export async function generateNext(options: {
   leaseMs: number;
   jobId?: string;
   allowScheduling?: boolean;
+  quota?: { limit: number; timeZone: string };
   generate: (input: JobInput) => Promise<ContentResult>;
 }): Promise<ContentJob | null> {
   const { store, leaseMs } = options;
@@ -182,6 +166,7 @@ export async function generateNext(options: {
     workerId: randomUUID(),
     leaseMs,
     brandId: options.brandId,
+    ...(options.quota ? { quota: options.quota } : {}),
     ...(options.jobId ? { jobId: options.jobId } : {}),
   });
   if (!claimed) return null;

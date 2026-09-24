@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { readLocalText } from "./files.js";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -6,23 +7,19 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import { loadBrand, readConfig, safeError } from "./config.js";
-import { createContentModel } from "./models.js";
+import { createContentModel, type ContentModel } from "./models.js";
 import { generateContent } from "./content.js";
-import { validateSourceInputs } from "./validation.js";
+import { validateJobInput, validateSourceInputs } from "./validation.js";
+import { collectSources } from "./collector.js";
+import { selectAndQueue } from "./pipeline.js";
 import {
   ContentJobStore,
   type ContentJob,
   type ContentJobState,
 } from "./store.js";
 import { PostizClient } from "./postiz-client.js";
+import { loadSource, type SourceInput, type SourceConfig } from "./sources.js";
 import {
-  discoverSources,
-  loadSource,
-  type SourceInput,
-  type SourceConfig,
-} from "./sources.js";
-import {
-  enqueueContent,
   generateNext,
   submitNext,
   syncJob,
@@ -34,9 +31,13 @@ const HELP = `Content worker for Postiz (Node.js 24+)
 
   yarn postiz:cli preview --url URL [--url URL] [--text-file FILE]
   yarn postiz:cli preview --input-json FILE
-  yarn postiz:cli enqueue --url URL [--schedule ISO_TIME] [--media FILE]
+  yarn postiz:cli enqueue --url URL [--text-file FILE]
   yarn postiz:cli enqueue --input-json FILE
   yarn postiz:cli discover
+  yarn postiz:cli candidates [--id CANDIDATE_ID]
+  yarn postiz:cli topics [--id TOPIC_ID]
+  yarn postiz:cli retry-candidate --id CANDIDATE_ID --reason TEXT [--confirm-new-event]
+  yarn postiz:cli review-topic --id TOPIC_ID --decision approve|reject --reason TEXT [--merge-with TOPIC_ID]
   yarn postiz:cli work [--once] [--no-submit]
   yarn postiz:cli show [--id CONTENT_ID]
   yarn postiz:cli retry --id CONTENT_ID [--refresh-brand] [--to-draft] [--reason TEXT]
@@ -46,7 +47,8 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli integrations
 
 Configuration: .env.postiz or CONTENT_ENV_FILE, plus CONTENT_BRAND_FILE.
-preview calls only source/model services. enqueue records a job, without API calls.
+preview calls source/model services and consumes the persistent daily writing budget.
+enqueue records candidates without API calls; work selects topics before writing.
 work processes at most CONTENT_MAX_JOBS_PER_TICK and defaults to Postiz drafts.
 Scheduling is disabled by default, including for tasks already in the database.
 Use retry --to-draft --reason TEXT to repair a failed scheduled task explicitly.
@@ -95,6 +97,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       "refresh-brand": { type: "boolean" },
       "to-draft": { type: "boolean" },
       reason: { type: "string" },
+      decision: { type: "string" },
+      "confirm-new-event": { type: "boolean" },
+      "merge-with": { type: "string" },
     },
   });
   const command = positionals[0];
@@ -113,12 +118,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     "sync",
     "integrations",
     "history",
+    "candidates",
+    "topics",
+    "retry-candidate",
+    "review-topic",
   ]);
   if (!commands.has(command) || positionals.length !== 1)
     throw new Error("Unknown command; use --help");
   const allowedFlags: Record<string, string[]> = {
     preview: ["url", "text-file", "input-json"],
-    enqueue: ["url", "text-file", "input-json", "media", "schedule"],
+    enqueue: ["url", "text-file", "input-json"],
     discover: [],
     work: ["once", "no-submit"],
     show: ["id", "state"],
@@ -127,6 +136,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     submit: ["id"],
     sync: ["id", "postiz-id"],
     integrations: [],
+    candidates: ["id"],
+    topics: ["id"],
+    "retry-candidate": ["id", "reason", "confirm-new-event"],
+    "review-topic": ["id", "reason", "decision", "merge-with"],
   };
   for (const [flag, value] of Object.entries(values)) {
     if (
@@ -148,25 +161,27 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     throw new Error("--media is only accepted by enqueue");
   loadEnv({ path: process.env.CONTENT_ENV_FILE || ".env.postiz", quiet: true });
   const config = readConfig();
+  let publisher: PostizClient | undefined;
   const client = () => {
     if (!config.postiz.apiKey)
       throw new Error("Set POSTIZ_API_KEY for this operation");
-    return new PostizClient({
+    return (publisher ??= new PostizClient({
       ...config.postiz,
       allowScheduling: config.allowScheduling,
-    });
+    }));
   };
   if (command === "integrations") {
     console.log(JSON.stringify(await client().listIntegrations(), null, 2));
     return;
   }
   const brand = await loadBrand(config.brandFile);
+  let selectedModel: ContentModel | undefined;
   const model = () => {
     if (!config.model.apiKey || !config.model.model)
       throw new Error(
         "Set CONTENT_MODEL_API_KEY and CONTENT_MODEL before generating content",
       );
-    return createContentModel(config.model);
+    return (selectedModel ??= createContentModel(config.model));
   };
 
   const inputSources = async (): Promise<SourceInput[]> => {
@@ -198,18 +213,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       docs.push(await loadSource(input, config.source));
     return docs;
   };
-  if (command === "preview") {
-    const selectedModel = model();
-    const result = await generateContent(
-      { brand, sources: await loadDocuments(await inputSources()) },
-      { model: selectedModel },
-    );
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
   await mkdir(dirname(config.dbPath), { recursive: true });
   const store = new ContentJobStore(config.dbPath);
+  const quota = {
+    limit: config.dailyGenerationLimit,
+    timeZone: config.dailyTimeZone,
+  };
+  if (store.migrationBackupPath)
+    console.error(`Pre-upgrade database backup: ${store.migrationBackupPath}`);
   const requiredJob = () => {
     if (!values.id) throw new Error("This command requires --id CONTENT_ID");
     const job = store.get(values.id);
@@ -218,43 +229,122 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     return job;
   };
   const discover = async () => {
-    if (!config.sourcesFile) return 0;
-    if (!config.postiz.integrationId)
-      throw new Error("Set POSTIZ_INTEGRATION_ID before source discovery");
+    if (!config.sourcesFile) return null;
     const sourceConfigs = await readJsonFile(config.sourcesFile);
     if (!Array.isArray(sourceConfigs))
       throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
-    const inputs = await discoverSources(sourceConfigs as SourceConfig[], {
-      ...config.source,
-      baseDir: dirname(config.sourcesFile),
+    return collectSources({
+      store,
+      brandId: brand.id,
+      workerId: randomUUID(),
+      sources: sourceConfigs as SourceConfig[],
+      sourceOptions: { ...config.source, baseDir: dirname(config.sourcesFile) },
+      maxSourcesPerTick: config.maxSourcesPerTick,
+      checkIntervalMs: config.discoveryIntervalMs,
+      leaseMs: config.leaseMs,
     });
-    let queued = 0;
-    for (const source of inputs) {
-      const job = enqueueContent(store, {
+  };
+  try {
+    if (command === "preview") {
+      const sources = await inputSources();
+      // Validate settings before reserving a full attempt, but persist before any
+      // source fetch or model request. Failures and process crashes are not refunded.
+      const contentModel = model();
+      if (
+        !store.reserveGenerationAttempt({
+          brandId: brand.id,
+          kind: "preview",
+          ...quota,
+        })
+      )
+        throw new Error(
+          "The daily writing limit has been reached; preview and retries share this budget",
+        );
+      const result = await generateContent(
+        { brand, sources: await loadDocuments(sources) },
+        { model: contentModel },
+      );
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === "enqueue") {
+      const input = validateJobInput({
         brand,
-        sources: [source],
+        sources: await inputSources(),
         integrationId: config.postiz.integrationId,
         mediaPaths: [],
       });
-      // Returned state is authoritative; existing sources never get a second job.
-      if (job.state === "queued") queued++;
-    }
-    return queued;
-  };
-  try {
-    if (command === "enqueue") {
-      const job = enqueueContent(
-        store,
-        {
-          brand,
-          sources: await inputSources(),
-          integrationId: config.postiz.integrationId,
-          mediaPaths: (values.media || []).map((path) => resolve(path)),
-        },
-        values.schedule,
-        { allowScheduling: config.allowScheduling },
+      const candidates = store.upsertCandidates({
+        brandId: brand.id,
+        origin: "manual",
+        inputs: input.sources,
+      });
+      console.log(
+        JSON.stringify(
+          {
+            candidateIds: candidates.map((candidate) => candidate.id),
+            candidates,
+          },
+          null,
+          2,
+        ),
       );
-      console.log(JSON.stringify(summary(job), null, 2));
+    } else if (command === "candidates") {
+      const candidates = store.listCandidates({
+        brandId: brand.id,
+        limit: 10000,
+      });
+      const result = values.id
+        ? candidates.find((candidate) => candidate.id === values.id)
+        : candidates;
+      if (!result)
+        throw new Error("Candidate does not exist for the selected brand");
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === "topics") {
+      const topics = store.listTopics({ brandId: brand.id });
+      const result = values.id
+        ? topics.find((topic) => topic.id === values.id)
+        : topics;
+      if (!result)
+        throw new Error("Topic does not exist for the selected brand");
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === "retry-candidate") {
+      if (!values.id || !values.reason?.trim())
+        throw new Error("Candidate retry requires --id and --reason");
+      const candidate = store.getCandidate(values.id);
+      if (!candidate || candidate.brandId !== brand.id)
+        throw new Error("Candidate does not exist for the selected brand");
+      const result = values["confirm-new-event"]
+        ? store.resolveCandidateLegacy(candidate.id, {
+            brandId: brand.id,
+            reason: values.reason,
+          })
+        : store.retryCandidate(candidate.id, {
+            brandId: brand.id,
+            reason: values.reason,
+          });
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === "review-topic") {
+      if (
+        !values.id ||
+        !values.reason?.trim() ||
+        !["approve", "reject"].includes(values.decision ?? "")
+      )
+        throw new Error(
+          "Topic review requires --id, --decision approve|reject and --reason",
+        );
+      console.log(
+        JSON.stringify(
+          store.reviewTopic(values.id, {
+            brandId: brand.id,
+            decision: values.decision as "approve" | "reject",
+            reason: values.reason,
+            ...(values["merge-with"]
+              ? { mergeWith: values["merge-with"] }
+              : {}),
+          }),
+          null,
+          2,
+        ),
+      );
     } else if (command === "show") {
       const validStates: ContentJobState[] = [
         "queued",
@@ -316,7 +406,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     } else if (command === "discover") {
       if (!config.sourcesFile)
         throw new Error("Set CONTENT_SOURCES_FILE before discover");
-      console.log(JSON.stringify({ queuedOrAlreadyQueued: await discover() }));
+      console.log(JSON.stringify(await discover(), null, 2));
     } else if (command === "submit") {
       const job = requiredJob();
       if (job.state !== "ready")
@@ -347,10 +437,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         ),
       );
     } else if (command === "work") {
-      const selectedModel = model();
       const autoSubmit = config.autoSubmit && !values["no-submit"];
-      const publisher = autoSubmit ? client() : undefined;
-      let nextDiscovery = 0;
       const controller = new AbortController();
       const stop = () => controller.abort();
       process.once("SIGINT", stop);
@@ -359,42 +446,81 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         do {
           try {
             store.recoverExpired();
-            if (Date.now() >= nextDiscovery) {
-              try {
-                await discover();
-                nextDiscovery = Date.now() + config.discoveryIntervalMs;
-              } catch (error) {
-                nextDiscovery =
-                  Date.now() + Math.min(config.discoveryIntervalMs, 900_000);
-                console.error(safeError(error));
-                if (values.once) process.exitCode = 1;
-              }
+            try {
+              const collection = await discover();
+              if (collection?.checked)
+                console.log(JSON.stringify({ collection }));
+              if (collection?.failed && values.once) process.exitCode = 1;
+            } catch (error) {
+              console.error(safeError(error));
+              if (values.once) process.exitCode = 1;
             }
-            for (
-              let i = 0;
-              i < config.maxJobsPerTick && !controller.signal.aborted;
-              i++
-            ) {
-              const result = await generateNext({
+            try {
+              if (
+                store.listCandidates({
+                  brandId: brand.id,
+                  status: "new",
+                  limit: 1,
+                }).length
+              )
+                model();
+              const selection = await selectAndQueue({
                 store,
-                brandId: brand.id,
-                leaseMs: config.leaseMs,
-                allowScheduling: config.allowScheduling,
-                generate: async (input) =>
-                  generateContent(
-                    {
-                      brand: input.brand,
-                      sources: await loadDocuments(input.sources),
-                    },
-                    { model: selectedModel },
-                  ),
+                brand,
+                integrationId: config.postiz.integrationId,
+                batchSize: config.selectionBatchSize,
+                sourceOptions: config.source,
+                model: { invoke: (request) => model().invoke(request) },
               });
-              if (!result) break;
-              console.log(JSON.stringify(summary(result)));
-              if (values.once && result.state === "failed")
-                process.exitCode = 1;
+              if (
+                selection.evaluated ||
+                selection.queued ||
+                selection.fetchFailed
+              )
+                console.log(JSON.stringify({ selection }));
+            } catch (error) {
+              console.error(safeError(error));
+              if (values.once) process.exitCode = 1;
             }
-            if (publisher) {
+            try {
+              if (
+                store.list({ brandId: brand.id, state: "queued", limit: 1 })
+                  .length
+              )
+                model();
+              for (
+                let i = 0;
+                i < config.maxJobsPerTick && !controller.signal.aborted;
+                i++
+              ) {
+                const result = await generateNext({
+                  store,
+                  brandId: brand.id,
+                  leaseMs: config.leaseMs,
+                  allowScheduling: config.allowScheduling,
+                  quota,
+                  generate: async (input) =>
+                    generateContent(
+                      {
+                        brand: input.brand,
+                        sources: await loadDocuments(input.sources),
+                      },
+                      { model: model() },
+                    ),
+                });
+                if (!result) break;
+                console.log(JSON.stringify(summary(result)));
+                if (values.once && result.state === "failed")
+                  process.exitCode = 1;
+              }
+            } catch (error) {
+              console.error(safeError(error));
+              if (values.once) process.exitCode = 1;
+            }
+            if (
+              autoSubmit &&
+              store.list({ brandId: brand.id, state: "ready", limit: 1 }).length
+            ) {
               for (
                 let i = 0;
                 i < config.maxJobsPerTick && !controller.signal.aborted;
@@ -402,7 +528,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
               ) {
                 const result = await submitNext({
                   store,
-                  client: publisher,
+                  client: client(),
                   brandId: brand.id,
                   leaseMs: config.leaseMs,
                   allowScheduling: config.allowScheduling,
@@ -412,8 +538,13 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
                 if (values.once && ["failed", "unknown"].includes(result.state))
                   process.exitCode = 1;
               }
-              await syncSubmitted(store, publisher, brand.id);
             }
+            if (
+              autoSubmit &&
+              store.list({ brandId: brand.id, state: "submitted", limit: 1 })
+                .length
+            )
+              await syncSubmitted(store, client(), brand.id);
           } catch (error) {
             console.error(safeError(error));
             if (values.once) process.exitCode = 1;

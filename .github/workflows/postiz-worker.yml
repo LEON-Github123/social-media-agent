@@ -53,7 +53,8 @@ jobs:
           }
           run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-created.json"
           run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-repeated.json"
-          run_content show --state queued > "${RUNNER_TEMP}/postiz-listed.json"
+          run_content candidates > "${RUNNER_TEMP}/postiz-listed.json"
+          run_content show --state queued > "${RUNNER_TEMP}/postiz-jobs.json"
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
@@ -61,9 +62,12 @@ jobs:
           const created = read('created');
           const repeated = read('repeated');
           const listed = read('listed');
-          assert.equal(created.state, 'queued');
-          assert.equal(repeated.id, created.id);
+          const jobs = read('jobs');
+          assert.equal(created.candidateIds.length, 1);
+          assert.deepEqual(repeated.candidateIds, created.candidateIds);
           assert.equal(listed.length, 1);
-          assert.equal(listed[0].id, created.id);
-          console.log('Container entrypoint, non-root volume persistence and deduplication passed.');
+          assert.equal(listed[0].id, created.candidateIds[0]);
+          assert.equal(listed[0].status, 'new');
+          assert.deepEqual(jobs, []);
+          console.log('Container entrypoint, non-root candidate persistence, deduplication and no premature jobs passed.');
           JS

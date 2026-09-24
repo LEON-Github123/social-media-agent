@@ -3,7 +3,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { discoverSources, loadSource, type SourceOptions } from "../sources.js";
+import {
+  discoverSourceBatch,
+  discoverSources,
+  loadSource,
+  sourceIdentity,
+  sourceReadKey,
+  type SourceOptions,
+} from "../sources.js";
 import { fetchPublicText, isPublicAddress, publicUrl } from "../network.js";
 
 const lookup: NonNullable<SourceOptions["lookup"]> = async () => [
@@ -553,5 +560,218 @@ void test("discovery deduplicates X URL aliases and enforces global limits witho
       { type: "rss", url: "https://example.com/feed", limit: 51 },
     ]),
     /Source limit/,
+  );
+});
+
+void test("a small source batch preserves the rest of a feed across process restarts", async () => {
+  let requests = 0;
+  const source = {
+    type: "rss" as const,
+    url: "https://example.com/feed",
+    limit: 4,
+  };
+  const first = await discoverSourceBatch(source, {
+    lookup,
+    batchSize: 2,
+    fetch: mockFetch(() => {
+      requests += 1;
+      return new Response(
+        `<rss><channel>${[1, 2, 3, 4].map((id) => `<item><title>Story ${id}</title><link>https://example.com/${id}</link></item>`).join("")}</channel></rss>`,
+      );
+    }),
+  });
+  assert.equal(first.complete, false);
+  assert.equal(first.inputs.length, 2);
+  const second = await discoverSourceBatch(source, {
+    batchSize: 2,
+    checkpoint: JSON.parse(JSON.stringify(first.checkpoint)),
+    fetch: mockFetch(() => {
+      throw new Error("An existing snapshot must not be fetched again");
+    }),
+  });
+  assert.equal(requests, 1);
+  assert.equal(second.complete, true);
+  assert.equal(second.checkpoint, null);
+  assert.deepEqual(
+    [...first.inputs, ...second.inputs].map((input) => input.url),
+    [1, 2, 3, 4].map((id) => `https://example.com/${id}`),
+  );
+});
+
+void test("GetX checkpoints drain a paid page before requesting its continuation", async () => {
+  const source = {
+    type: "getx-user" as const,
+    userName: "Example",
+    limit: 5,
+    maxPages: 2,
+  };
+  const requests: URL[] = [];
+  const options = {
+    lookup,
+    getxApiKey: "token",
+    batchSize: 2,
+    fetch: mockFetch((input) => {
+      const url = new URL(input);
+      requests.push(url);
+      return json({
+        tweets: (url.searchParams.has("cursor") ? [4, 5] : [1, 2, 3]).map(
+          (id) => ({
+            id: String(id),
+            text: `Evidence ${id}`,
+            author: { userName: "Example" },
+          }),
+        ),
+        has_more: !url.searchParams.has("cursor"),
+        next_cursor: "next-page",
+      });
+    }),
+  };
+  const first = await discoverSourceBatch(source, options);
+  assert.equal(first.inputs.length, 2);
+  const second = await discoverSourceBatch(source, {
+    ...options,
+    checkpoint: JSON.parse(JSON.stringify(first.checkpoint)),
+  });
+  assert.equal(second.inputs.length, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(second.complete, false);
+  const third = await discoverSourceBatch(source, {
+    ...options,
+    checkpoint: JSON.parse(JSON.stringify(second.checkpoint)),
+  });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].searchParams.get("cursor"), "next-page");
+  assert.equal(third.complete, true);
+  assert.deepEqual(
+    [...first.inputs, ...second.inputs, ...third.inputs].map(
+      (input) => input.url,
+    ),
+    [1, 2, 3, 4, 5].map((id) => `https://x.com/Example/status/${id}`),
+  );
+});
+
+void test("one GetX source check never chains paid requests when a page is filtered out", async () => {
+  let requests = 0;
+  const source = {
+    type: "getx-search" as const,
+    query: "AI",
+    minLikes: 100,
+    maxPages: 3,
+  };
+  const options = {
+    lookup,
+    getxApiKey: "token",
+    fetch: mockFetch(() => {
+      requests += 1;
+      return json({
+        tweets: [{ id: String(requests), text: "Low score", likeCount: 1 }],
+        has_more: true,
+        next_cursor: `page-${requests}`,
+      });
+    }),
+  };
+  const first = await discoverSourceBatch(source, options);
+  assert.deepEqual(first.inputs, []);
+  assert.equal(first.complete, false);
+  assert.equal(requests, 1);
+  const second = await discoverSourceBatch(source, {
+    ...options,
+    checkpoint: first.checkpoint,
+  });
+  assert.equal(requests, 2);
+  const third = await discoverSourceBatch(source, {
+    ...options,
+    checkpoint: second.checkpoint,
+  });
+  assert.equal(requests, 3);
+  assert.equal(third.complete, true);
+});
+
+void test("configuration changes invalidate stale pending work while schedule changes preserve it", async () => {
+  const source = {
+    type: "rss" as const,
+    id: "release-feed",
+    url: "https://example.com/feed",
+    limit: 2,
+  };
+  const options = {
+    lookup,
+    batchSize: 1,
+    fetch: mockFetch(
+      () =>
+        new Response(
+          "<rss><channel><item><link>https://example.com/a</link></item><item><link>https://example.com/b</link></item></channel></rss>",
+        ),
+    ),
+  };
+  const first = await discoverSourceBatch(source, options);
+  assert.equal(
+    sourceIdentity(source),
+    sourceIdentity({ ...source, checkIntervalMs: 30_000 }),
+  );
+  assert.equal(
+    sourceReadKey(source),
+    sourceReadKey({ ...source, checkIntervalMs: 30_000, primary: true }),
+  );
+  assert.notEqual(
+    sourceReadKey(source),
+    sourceReadKey({ ...source, url: "https://example.com/new-feed" }),
+  );
+  const continued = await discoverSourceBatch(
+    { ...source, checkIntervalMs: 30_000 },
+    {
+      ...options,
+      checkpoint: first.checkpoint,
+      fetch: mockFetch(() => {
+        throw new Error("Unexpected re-fetch");
+      }),
+    },
+  );
+  assert.equal(continued.inputs[0].url, "https://example.com/b");
+  let refreshed = false;
+  const changed = await discoverSourceBatch(
+    { ...source, url: "https://example.com/new-feed" },
+    {
+      ...options,
+      checkpoint: first.checkpoint,
+      fetch: mockFetch(() => {
+        refreshed = true;
+        return new Response(
+          "<rss><channel><item><link>https://example.com/c</link></item></channel></rss>",
+        );
+      }),
+    },
+  );
+  assert.equal(refreshed, true);
+  assert.equal(changed.inputs[0].url, "https://example.com/c");
+});
+
+void test("disabled paid examples make no calls through either discovery API", async () => {
+  const source = { type: "getx-search" as const, query: "AI", enabled: false };
+  const options = {
+    fetch: mockFetch(() => {
+      throw new Error("Paid example should not execute");
+    }),
+  };
+  assert.deepEqual(await discoverSources([source], options), []);
+  assert.deepEqual(await discoverSourceBatch(source, options), {
+    inputs: [],
+    checkpoint: null,
+    complete: true,
+  });
+});
+
+void test("invalid persisted checkpoint data cannot bypass input validation", async () => {
+  const source = { type: "rss" as const, url: "https://example.com/feed" };
+  await assert.rejects(
+    discoverSourceBatch(source, {
+      checkpoint: {
+        version: 1,
+        sourceKey: sourceReadKey(source),
+        kind: "snapshot",
+        pending: [{ url: "http://127.0.0.1/private", text: "Untrusted" }],
+      },
+    }),
+    /Private|public/,
   );
 });

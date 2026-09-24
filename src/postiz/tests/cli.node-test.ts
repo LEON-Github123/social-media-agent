@@ -19,6 +19,11 @@ void test("configuration rejects invalid automation controls and strips known cr
     true,
   );
   assert.throws(() => readConfig({ CONTENT_ALLOW_SCHEDULING: "yes" }));
+  assert.equal(readConfig({}).dailyGenerationLimit, 3);
+  assert.equal(readConfig({}).dailyTimeZone, "Asia/Shanghai");
+  assert.throws(() => readConfig({ CONTENT_DAILY_GENERATION_LIMIT: "4" }));
+  assert.throws(() => readConfig({ CONTENT_DAILY_TIMEZONE: "invalid-zone" }));
+  assert.throws(() => readConfig({ CONTENT_SELECTION_BATCH_SIZE: "21" }));
   assert.throws(() => readConfig({ CONTENT_AUTO_SUBMIT: "yes" }));
   assert.throws(() => readConfig({ CONTENT_MAX_JOBS_PER_TICK: "NaN" }));
   assert.throws(() => readConfig({ CONTENT_MODEL_PROVIDER: "unknown" }));
@@ -30,7 +35,7 @@ void test("configuration rejects invalid automation controls and strips known cr
   );
 });
 
-void test("CLI completes enqueue -> model workflow -> Postiz draft -> sync, and a rerun sends nothing", async (t) => {
+void test("CLI completes candidate -> topic -> model workflow -> Postiz draft -> sync, and a restart sends nothing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "postiz-cli-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let modelCalls = 0;
@@ -55,8 +60,37 @@ void test("CLI completes enqueue -> model workflow -> Postiz draft -> sync, and 
       response.setHeader("Content-Type", "application/json");
       if (request.url === "/v1/chat/completions") {
         assert.equal(request.headers.authorization, "Bearer fake-model-key");
-        const content = modelResponses[modelCalls++];
-        assert.ok(content, "No more than four content model calls");
+        const stage = modelCalls++;
+        const payload = JSON.parse(body);
+        const supplied =
+          stage === 0
+            ? JSON.parse(payload.messages[payload.messages.length - 1].content)
+                .candidates[0]
+            : null;
+        const content =
+          stage === 0
+            ? JSON.stringify({
+                decisions: [
+                  {
+                    candidateId: supplied.candidateId,
+                    scores: { relevance: 90, evidence: 90, developerValue: 90 },
+                    certainty: "confirmed",
+                    reason: "Practical developer documentation",
+                    identity: {
+                      entity: "Example",
+                      product: "Developer tool",
+                      version: null,
+                      eventType: "tutorial",
+                      eventDate: null,
+                      primaryUrl: "https://example.com/release",
+                    },
+                    identityEvidence:
+                      "Release notes describe the developer tool and link to its documentation.",
+                  },
+                ],
+              })
+            : modelResponses[stage - 1];
+        assert.ok(content, "One selection call and at most four writing calls");
         response.end(
           JSON.stringify({
             id: "test-completion",
@@ -190,30 +224,88 @@ void test("CLI completes enqueue -> model workflow -> Postiz draft -> sync, and 
   const enqueued = JSON.parse(
     (await run(["enqueue", "--input-json", inputPath])).stdout,
   );
-  assert.equal(enqueued.state, "queued");
+  assert.equal(enqueued.candidates[0].status, "new");
   assert.equal(modelCalls, 0);
   assert.equal(postCalls, 0);
+  await assert.rejects(
+    execute(
+      process.execPath,
+      ["--import", "tsx", resolve("src/postiz/cli.ts"), "work", "--once"],
+      {
+        env: { ...env, CONTENT_MODEL_API_KEY: "" },
+        timeout: 15000,
+      },
+    ),
+    /Set CONTENT_MODEL_API_KEY/,
+  );
+  assert.equal(
+    JSON.parse((await run(["candidates"])).stdout)[0].status,
+    "new",
+    "Missing credentials must not poison candidates or consume selection calls",
+  );
+  assert.equal(modelCalls, 0);
   await run(["work", "--once"]);
-  const stored = JSON.parse((await run(["show", "--id", enqueued.id])).stdout);
+  const jobs = JSON.parse((await run(["show"])).stdout);
+  assert.equal(jobs.length, 1);
+  const stored = JSON.parse((await run(["show", "--id", jobs[0].id])).stdout);
   assert.equal(stored.state, "submitted");
   assert.equal(stored.postizState, "DRAFT");
   assert.equal(stored.platformPostId, null);
   assert.equal(receivedContent, postText);
-  assert.equal(modelCalls, 4);
+  assert.equal(modelCalls, 5);
   assert.equal(postCalls, 1);
   const duplicate = JSON.parse(
     (await run(["enqueue", "--input-json", inputPath])).stdout,
   );
-  assert.equal(duplicate.id, enqueued.id);
+  assert.deepEqual(duplicate.candidateIds, enqueued.candidateIds);
   await run(["work", "--once"]);
-  assert.equal(modelCalls, 4);
+  assert.equal(modelCalls, 5);
   assert.equal(postCalls, 1);
   await assert.rejects(
-    run(["submit", "--id", enqueued.id]),
+    run(["submit", "--id", jobs[0].id]),
     /only ready content/,
   );
   await assert.rejects(
     run(["work", "--url", "https://example.com/unexpected"]),
     /not supported/,
+  );
+  modelResponses.push(
+    JSON.stringify({ relevant: false, reasoning: "No useful new material" }),
+    JSON.stringify({ relevant: false, reasoning: "No useful new material" }),
+  );
+  for (let i = 0; i < 2; i++) {
+    const preview = JSON.parse(
+      (await run(["preview", "--input-json", inputPath])).stdout,
+    );
+    assert.equal(preview.relevant, false);
+  }
+  await assert.rejects(
+    run(["preview", "--input-json", inputPath]),
+    /daily writing limit/,
+  );
+  assert.equal(
+    modelCalls,
+    7,
+    "One generation and two rejected previews exhaust the persistent daily quota",
+  );
+  assert.equal(postCalls, 1);
+  await execute(
+    process.execPath,
+    ["--import", "tsx", resolve("src/postiz/cli.ts"), "work", "--once"],
+    {
+      env: {
+        ...env,
+        CONTENT_DB_PATH: join(directory, "empty.sqlite"),
+        CONTENT_MODEL_API_KEY: "",
+        POSTIZ_API_KEY: "",
+        POSTIZ_INTEGRATION_ID: "",
+      },
+      timeout: 15000,
+    },
+  );
+  assert.equal(
+    modelCalls,
+    7,
+    "Empty workers start without model or social credentials",
   );
 });

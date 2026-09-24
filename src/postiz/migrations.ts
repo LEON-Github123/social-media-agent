@@ -68,6 +68,100 @@ const migrations: readonly Migration[] = [
         ON audit_events (brand_id, created_at, id);
     `,
   },
+  {
+    version: 3,
+    name: "content_operations",
+    sql: `
+      CREATE TABLE content_candidates (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        url_key TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        source_id TEXT,
+        input_json TEXT NOT NULL,
+        document_json TEXT,
+        primary_source INTEGER NOT NULL DEFAULT 0,
+        fetch_state TEXT NOT NULL CHECK (fetch_state IN ('pending','fetched','failed')),
+        status TEXT NOT NULL CHECK (status IN ('new','selected','rejected','needs_review','failed')),
+        topic_id TEXT,
+        legacy_job_ids_json TEXT NOT NULL DEFAULT '[]',
+        legacy_conflict INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (brand_id, url_key, content_hash)
+      );
+      CREATE INDEX content_candidates_queue ON content_candidates (brand_id, status, created_at, id);
+      CREATE TABLE candidate_origins (
+        candidate_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        PRIMARY KEY (candidate_id, source_id, origin)
+      );
+      CREATE TABLE source_checkpoints (
+        brand_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        primary_source INTEGER NOT NULL DEFAULT 0,
+        config_hash TEXT,
+        checkpoint_json TEXT,
+        checked_at INTEGER,
+        next_check_at INTEGER NOT NULL DEFAULT 0,
+        last_failure TEXT,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        lease_token TEXT,
+        lease_owner TEXT,
+        lease_until INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (brand_id, source_id)
+      );
+      CREATE INDEX source_checkpoints_due ON source_checkpoints (brand_id, next_check_at, checked_at);
+      CREATE TABLE content_topics (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        identity_key TEXT NOT NULL,
+        identity_json TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('ready','needs_review','rejected','existing')),
+        reason TEXT NOT NULL,
+        source_candidate_ids_json TEXT NOT NULL,
+        source_metadata_json TEXT NOT NULL,
+        proposed_identity_key TEXT,
+        conflicting_topic_ids_json TEXT NOT NULL DEFAULT '[]',
+        merged_into_topic_id TEXT,
+        job_id TEXT UNIQUE,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (brand_id, identity_key)
+      );
+      CREATE TABLE topic_candidate_links (
+        topic_id TEXT NOT NULL,
+        candidate_id TEXT NOT NULL UNIQUE,
+        PRIMARY KEY (topic_id, candidate_id)
+      );
+      CREATE INDEX content_topics_brand ON content_topics (brand_id, created_at, id);
+      CREATE TABLE generation_attempts (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        job_id TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('generation','preview')),
+        day_key TEXT NOT NULL,
+        time_zone TEXT NOT NULL,
+        started_at INTEGER NOT NULL
+      );
+      CREATE INDEX generation_attempts_daily ON generation_attempts (brand_id, started_at);
+      CREATE TABLE selection_model_calls (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        task TEXT NOT NULL CHECK (task IN ('selection','selection_review')),
+        candidate_ids_json TEXT NOT NULL,
+        started_at INTEGER NOT NULL
+      );
+      CREATE INDEX selection_model_calls_daily ON selection_model_calls (brand_id, started_at);
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;
@@ -113,13 +207,13 @@ export function migrateContentDatabase(
   const applied = appliedMigrations(db);
   validateHistory(applied);
   let backupPath: string | null = null;
-  const hasTables = db
+  const existingTables = db
     .prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1",
     )
     .get();
   if (
-    hasTables &&
+    existingTables &&
     applied.length < migrations.length &&
     options.databasePath !== ":memory:"
   ) {

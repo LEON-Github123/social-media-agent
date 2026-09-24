@@ -101,6 +101,233 @@ void test("irrelevant sources stop after the first decision", async () => {
   assert.deepEqual(result.quality.reasons, ["Unrelated to the audience"]);
 });
 
+void test("the writer uses natural English, one useful point, and no inherited marketing or brand insertion template", async () => {
+  const { model, calls } = fakeModel(validOutputs());
+  await generateContent(input, {
+    model,
+    now: Date.parse("2026-09-24T12:00:00Z"),
+  });
+  const writing = calls.find((call) => call.task === "post")!;
+  assert.match(writing.system, /natural, concise X post in English/);
+  assert.match(writing.system, /ONE concrete point or give ONE practical step/);
+  assert.match(writing.system, /The account name is not a required keyword/);
+  assert.match(writing.system, /first-party claims/);
+  assert.ok(!writing.system.includes("highly regarded marketing employee"));
+  assert.ok(!writing.system.includes("yearly bonus"));
+  assert.ok(!writing.system.includes("LinkedIn"));
+  assert.ok(
+    calls.every((call) => call.system.includes("2026-09-24T12:00:00.000Z")),
+  );
+});
+
+void test("an evergreen developer-docs fixture can produce a useful English tip without claiming Tokenhot capabilities", async () => {
+  // Synthetic source text: this test exercises the contract, not a live model or
+  // a claim that these URLs were fetched and semantically reviewed here.
+  const url = "https://docs.tokenhot.ai/general";
+  const custom: ContentInput = {
+    brand: { ...brand, id: "tokenhot", name: "Tokenhot", verifiedFacts: [] },
+    sources: [
+      {
+        url,
+        title: "API integration checklist",
+        publishedAt: "2025-01-01T00:00:00Z",
+        text: "When changing an API endpoint, verify the base URL, API key and model ID together. A mismatch can cause a failed request.",
+      },
+    ],
+  };
+  const tip = `When switching an API endpoint, verify the base URL, API key and model ID together. A mismatch can break a request. ${url}`;
+  const { model, calls } = fakeModel([
+    '{"relevant":true,"reasoning":"A specific evergreen integration check is useful to developers."}',
+    `<report>Check the endpoint, credential and model identifier together. Source: ${url}</report>`,
+    `<post>${tip}</post>`,
+    '{"approved":true,"reasons":[]}',
+  ]);
+  const result = await generateContent(custom, {
+    model,
+    now: Date.parse("2026-09-24T12:00:00Z"),
+  });
+  assert.equal(result.quality.approved, true);
+  assert.equal(result.post, tip);
+  assert.equal(calls.length, 4);
+  assert.ok(!result.post.replace(url, "").includes("Tokenhot"));
+  assert.match(calls[0].system, /evergreen how-to/);
+});
+
+void test("known old launch news is rejected before model calls instead of filling the posting quota", async () => {
+  const now = Date.parse("2026-09-24T12:00:00Z");
+  for (const source of [
+    {
+      url: "https://tokenhot.ai/blog/launch",
+      title: "Tokenhot launch",
+      publishedAt: "2026-03-25T00:00:00Z",
+      text: "A launch announcement from March 25, 2026.",
+    },
+    {
+      url: "https://tokenhot.ai/blog/launch",
+      title: "Introducing Tokenhot",
+      text: "Published: March 25, 2026\nThis article announces the initial launch.",
+    },
+  ]) {
+    const { model, calls } = fakeModel([]);
+    const result = await generateContent(
+      { ...input, sources: [source] },
+      { model, now },
+    );
+    assert.equal(result.relevant, false);
+    assert.equal(result.post, "");
+    assert.equal(result.report, "");
+    assert.equal(result.quality.approved, false);
+    assert.match(result.reasoning, /older than 30 days/);
+    assert.equal(calls.length, 0);
+  }
+});
+
+void test("a dated source cannot support a just-released claim even if its title is not recognized as news", async () => {
+  const custom: ContentInput = {
+    ...input,
+    sources: [{ ...input.sources[0], publishedAt: "2026-03-25T00:00:00Z" }],
+  };
+  const outputs = validOutputs();
+  outputs[2] = `<post>Just released: support for PNG input. ${sourceUrl}</post>`;
+  const { model, calls } = fakeModel(outputs);
+  const result = await generateContent(custom, {
+    model,
+    now: Date.parse("2026-09-24T12:00:00Z"),
+  });
+  assert.equal(result.quality.approved, false);
+  assert.ok(
+    result.quality.reasons.includes(
+      "Old source material cannot support a current-news claim",
+    ),
+  );
+  assert.equal(calls.length, 3);
+});
+
+void test("the relevance contract allows an unrelated wildlife fixture to produce zero draft", async () => {
+  const wildlife: ContentInput = {
+    ...input,
+    sources: [
+      {
+        url: "https://www.nps.gov/yell/learn/nature/bison.htm",
+        title: "Bison",
+        text: "Bison live in Yellowstone National Park. This source describes wildlife and habitat.",
+      },
+    ],
+  };
+  const { model, calls } = fakeModel([
+    '{"relevant":false,"reasoning":"Wildlife and habitat have no evidenced AI API or developer workflow connection."}',
+  ]);
+  const result = await generateContent(wildlife, { model });
+  assert.equal(result.relevant, false);
+  assert.equal(result.post, "");
+  assert.equal(calls.length, 1);
+  assert.match(
+    calls[0].system,
+    /wildlife or general-interest content does not become relevant/,
+  );
+});
+
+void test("Globalping evidence does not authorize an own-brand model-inference performance claim", async () => {
+  const url = "https://tokenhot.ai/";
+  const custom: ContentInput = {
+    brand: { ...brand, id: "tokenhot", name: "Tokenhot", verifiedFacts: [] },
+    sources: [
+      {
+        url,
+        title: "Network probe",
+        text: "A Globalping HTTP network probe reported a 20 ms round-trip measurement.",
+      },
+    ],
+  };
+  const { model, calls } = fakeModel([
+    '{"relevant":true,"reasoning":"Explain what a network probe measures."}',
+    `<report>The supplied Globalping observation is a network round-trip, not an AI response benchmark. ${url}</report>`,
+    `<post>Tokenhot delivers model inference in 20 ms. ${url}</post>`,
+    '{"approved":true,"reasons":[]}',
+  ]);
+  const result = await generateContent(custom, { model });
+  assert.equal(result.quality.approved, false);
+  assert.ok(
+    result.quality.reasons.includes(
+      "Own-brand capability or performance claims require verifiedFacts",
+    ),
+  );
+  assert.equal(calls.length, 3);
+  assert.ok(
+    calls.every((call) =>
+      call.system.includes("do not establish model inference latency"),
+    ),
+  );
+});
+
+void test("metric extrapolation remains part of the independent quality-review contract", async () => {
+  const { model, calls } = fakeModel(
+    validOutputs(
+      '{"approved":false,"reasons":["A network round-trip cannot prove model inference latency."]}',
+    ),
+  );
+  const result = await generateContent(input, { model });
+  assert.equal(result.quality.approved, false);
+  const quality = calls.find((call) => call.task === "quality")!;
+  assert.match(
+    quality.system,
+    /Globalping\/HTTP network probe cannot support model inference latency, TTFT or generation throughput/,
+  );
+  assert.match(quality.system, /original sources and verifiedFacts/);
+  assert.match(quality.system, /Zero approved posts is an acceptable result/);
+});
+
+void test("research and writing can each explicitly skip without a repair loop or a placeholder draft", async () => {
+  for (const stage of ["report", "post"] as const) {
+    const outputs = validOutputs();
+    outputs[stage === "report" ? 1 : 2] =
+      "<skip>The evidence does not support one useful claim.</skip>";
+    const { model, calls } = fakeModel(outputs);
+    const result = await generateContent(input, { model });
+    assert.equal(result.relevant, false);
+    assert.equal(result.post, "");
+    assert.equal(result.quality.approved, false);
+    assert.deepEqual(result.quality.reasons, [
+      "The evidence does not support one useful claim.",
+    ]);
+    assert.equal(calls.length, stage === "report" ? 2 : 3);
+  }
+});
+
+void test("invalid skip markup cannot bypass validation, and thread segments fail before quality approval", async () => {
+  for (const malformed of [
+    "<skip></skip>",
+    "<skip><post>Do this</post></skip>",
+    "Some explanation <skip>No useful point</skip>",
+  ]) {
+    const outputs = validOutputs();
+    outputs[1] = malformed;
+    const { model } = fakeModel(outputs);
+    await assert.rejects(
+      generateContent(input, { model }),
+      /invalid (skip decision|report output)/,
+    );
+  }
+  const outputs = validOutputs();
+  outputs[2] = `<post>1/2 Check PNG support. ${sourceUrl}</post>`;
+  const { model, calls } = fakeModel(outputs);
+  const result = await generateContent(input, { model });
+  assert.equal(result.quality.approved, false);
+  assert.ok(
+    result.quality.reasons.some((reason) => reason.includes("thread segments")),
+  );
+  assert.equal(calls.length, 3);
+});
+
+void test("a malformed injected clock fails before any model call", async () => {
+  const { model, calls } = fakeModel([]);
+  await assert.rejects(
+    generateContent(input, { model, now: Number.NaN }),
+    /Content clock/,
+  );
+  assert.equal(calls.length, 0);
+});
+
 void test("malformed or coerced relevance decisions never proceed to writing", async () => {
   for (const output of [
     'Sure! {"relevant":true,"reasoning":"yes"}',

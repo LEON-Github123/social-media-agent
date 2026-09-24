@@ -35,6 +35,10 @@ export interface WorkerConfig {
   maxJobsPerTick: number;
   autoSubmit: boolean;
   allowScheduling: boolean;
+  dailyGenerationLimit: number;
+  dailyTimeZone: string;
+  selectionBatchSize: number;
+  maxSourcesPerTick: number;
   leaseMs: number;
 }
 
@@ -64,6 +68,12 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const allowScheduling = env.CONTENT_ALLOW_SCHEDULING || "false";
   if (allowScheduling !== "true" && allowScheduling !== "false")
     throw new Error("CONTENT_ALLOW_SCHEDULING must be true or false");
+  const dailyTimeZone = env.CONTENT_DAILY_TIMEZONE || "Asia/Shanghai";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: dailyTimeZone }).format(0);
+  } catch {
+    throw new Error("CONTENT_DAILY_TIMEZONE must be a valid IANA timezone");
+  }
   return {
     brandFile: resolve(
       env.CONTENT_BRAND_FILE || "config/postiz/brand.example.json",
@@ -121,6 +131,28 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     maxJobsPerTick: positiveInt(env, "CONTENT_MAX_JOBS_PER_TICK", 3, 1, 100),
     autoSubmit: autoSubmit === "true",
     allowScheduling: allowScheduling === "true",
+    dailyGenerationLimit: positiveInt(
+      env,
+      "CONTENT_DAILY_GENERATION_LIMIT",
+      3,
+      1,
+      3,
+    ),
+    dailyTimeZone,
+    selectionBatchSize: positiveInt(
+      env,
+      "CONTENT_SELECTION_BATCH_SIZE",
+      20,
+      1,
+      20,
+    ),
+    maxSourcesPerTick: positiveInt(
+      env,
+      "CONTENT_MAX_SOURCES_PER_TICK",
+      5,
+      1,
+      20,
+    ),
     leaseMs: positiveInt(env, "CONTENT_LEASE_MS", 300_000, 30_000, 3_600_000),
   };
 }
