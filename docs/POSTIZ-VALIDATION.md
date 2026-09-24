@@ -4,27 +4,33 @@
 
 ## 已完成的验证
 
-| 项目                       | 本次结果                             | 结果能说明什么                                                                                                           |
-| -------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| 新 worker 的 Node 测试     | **73 / 73 通过，0 跳过**             | 已覆盖测试所定义的正常流程、失败路径与输入边界                                                                           |
-| 本地 HTTP 端到端测试       | 通过，包含在上述 73 项中             | 启动 CLI 子进程，访问本地模型和 Postiz mock HTTP 服务，完成入队、生成、草稿提交、同步与重复运行检查                      |
-| SQLite 状态与并发          | 通过，使用真实 SQLite 文件与两个连接 | 覆盖任务抢占、持久化、租约、品牌隔离、未知提交结果与恢复边界                                                             |
-| worker 类型检查            | 通过                                 | `tsconfig.postiz.json` 所覆盖代码的类型检查通过                                                                          |
-| worker 编译与编译后入口    | 通过                                 | 编译生成 `dist-postiz`，编译后的 CLI 能输出 `--help`                                                                     |
-| 原仓库 TypeScript 检查     | `tsc --noEmit` 通过                  | 原仓库当前 TypeScript 配置所覆盖内容没有报告类型错误                                                                     |
-| 改动的生产 TypeScript 文件 | ESLint 通过                          | 本次 worker 与共享 Prompt 改动通过所运行的 lint 检查                                                                     |
-| 官方 Compose bootstrap     | 完整检出成功                         | 固定提交 `dd4969e5e694cd009619a0d53cff14c21104580b` 的完整目录可取得，包含官方 YAML、LICENSE 和两个 `dynamicconfig` 文件 |
+| 项目                    | 本次结果                             | 结果能说明什么                                                                                                           |
+| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| 新 worker 的 Node 测试  | **73 / 73 通过，0 跳过**             | 已覆盖测试所定义的正常流程、失败路径与输入边界                                                                           |
+| 本地 HTTP 端到端测试    | 通过，包含在上述 73 项中             | 启动 CLI 子进程，访问本地模型和 Postiz mock HTTP 服务，完成入队、生成、草稿提交、同步与重复运行检查                      |
+| SQLite 状态与并发       | 通过，使用真实 SQLite 文件与两个连接 | 覆盖任务抢占、持久化、租约、品牌隔离、未知提交结果与恢复边界                                                             |
+| worker 类型检查         | 通过                                 | `tsconfig.postiz.json` 所覆盖代码的类型检查通过                                                                          |
+| worker 编译与编译后入口 | 通过                                 | 编译生成 `dist-postiz`，编译后的 CLI 能输出 `--help`                                                                     |
+| 原仓库 TypeScript 检查  | `tsc --noEmit` 通过                  | 原仓库当前 TypeScript 配置所覆盖内容没有报告类型错误                                                                     |
+| 全仓 lint 与图路径检查  | 通过                                 | 包含新增测试文件；保留原有检查规则。上游 8 条 unused-disable 警告不导致失败                                              |
+| 官方 Compose bootstrap  | 完整检出成功                         | 固定提交 `dd4969e5e694cd009619a0d53cff14c21104580b` 的完整目录可取得，包含官方 YAML、LICENSE 和两个 `dynamicconfig` 文件 |
 
 测试覆盖的边界包括：来源 URL 与重定向检查、正文/文件大小、无效 UTF-8、无效模型输出、证据链接和 X 加权长度、错误账号、排期时间、重复来源、明确拒绝与未知提交结果。具体断言以 `src/postiz/tests/*.node-test.ts` 为准。
 
 本地 HTTP 测试确实经过 HTTP 请求与 CLI 子进程，但服务响应由测试固定提供。SQLite 测试确实使用数据库文件，但不能据此推断所有生产负载与故障组合都已覆盖。
 
+## GitHub CI
+
+首个提交的 [Postiz worker 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35971007691) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35971007612) 已通过。首次 lint 检查发现新测试未被 ESLint 的 TypeScript 项目覆盖，随后增加专用测试项目配置，并显式标记由 Node 测试运行器负责等待的注册调用；修复后全仓 lint 与 73 项 worker 测试在本地通过。
+
+PR 的 `Postiz content worker` 工作流还增加了实际 Docker 构建和容器验证：检查编译入口，以非 root 用户在只读根文件系统、无网络的容器中入队，再创建新容器检查具名卷持久化和去重。它只使用公开示例数据，不需要业务密钥，也不调用发布服务。各次提交的实际执行结果见 [PR Checks](https://github.com/LEON-Github123/social-media-agent/pull/1/checks)，新增检查在完成前不能视为通过。
+
 ## 尚未完成的验证
 
-- 当前环境 **Docker Engine 不可用**，没有构建内容 worker 镜像，也没有启动真实的 Postiz / Temporal Docker 栈。
+- 本地执行环境 **Docker Engine 不可用**；worker 镜像由上面的 GitHub CI 验证。真实的 Postiz / Temporal 服务栈尚未启动验收，worker 容器检查不能替代整套服务联调。
 - 没有使用真实模型、Postiz 或 X 密钥执行本次测试，也没有向 X 发帖。
 - 模型内容质量仍需使用真实品牌资料和真实来源试跑。Schema、长度和复审流程通过，不等于所有事实和文案质量自动得到保证。
-- 没有运行原仓库全部旧测试。全仓类型检查通过不能替代旧工作流的单元、集成或端到端测试。
+- 原仓库 Unit Tests 已由 GitHub 执行；需要真实服务的旧工作流集成测试、生产端到端测试仍未执行。
 - 没有据此验证生产环境的 X 授权能力、额度、模型/采集费用、长时间运行或实际 Docker 卷恢复。
 
 因此，本次结果支持继续进行真实环境的分步验收，不能称为 Docker 已部署成功、生产全量回归通过或真实发布闭环已验证。
@@ -44,10 +50,7 @@ yarn postiz:build
 node dist-postiz/src/postiz/cli.js --help
 
 yarn tsc --noEmit
-yarn eslint src/postiz/*.ts \
-  src/agents/generate-post/nodes/prompt-core.ts \
-  src/agents/generate-post/nodes/generate-post/prompts.ts \
-  src/agents/generate-post/nodes/generate-report/prompts.ts
+yarn lint:all
 ```
 
 独立重跑本地 HTTP 端到端与配置测试：

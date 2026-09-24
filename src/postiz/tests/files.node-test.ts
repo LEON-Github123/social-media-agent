@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLocalText } from "../files.js";
 
-test("local file limits count bytes and reject directories before reading", async (t) => {
+void test("local file limits count bytes and reject directories before reading", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "content-file-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "source.txt");
@@ -15,7 +15,7 @@ test("local file limits count bytes and reject directories before reading", asyn
   await assert.rejects(readLocalText(dir, 100), /regular file/);
 });
 
-test("malformed UTF-8 cannot silently alter imported evidence", async (t) => {
+void test("malformed UTF-8 cannot silently alter imported evidence", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "content-file-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "source.txt");

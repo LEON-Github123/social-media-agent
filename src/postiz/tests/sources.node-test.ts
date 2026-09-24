@@ -20,7 +20,7 @@ const json = (data: unknown, status = 200) =>
   });
 const now = () => new Date("2026-09-24T12:00:00Z");
 
-test("supplied source text bypasses all network work and respects maxChars", async () => {
+void test("supplied source text bypasses all network work and respects maxChars", async () => {
   const source = await loadSource(
     {
       url: "https://example.com/post#heading",
@@ -48,7 +48,7 @@ test("supplied source text bypasses all network work and respects maxChars", asy
   );
 });
 
-test("direct HTML extraction isolates main content and excludes navigation/scripts", async () => {
+void test("direct HTML extraction isolates main content and excludes navigation/scripts", async () => {
   const source = await loadSource(
     { url: "https://example.com/post" },
     {
@@ -68,7 +68,7 @@ test("direct HTML extraction isolates main content and excludes navigation/scrip
   assert.doesNotMatch(source.text, /Navigation|Footer|secret/);
 });
 
-test("HTTP errors, unsupported payloads and empty extraction cannot become documents", async () => {
+void test("HTTP errors, unsupported payloads and empty extraction cannot become documents", async () => {
   for (const response of [
     new Response("failure", { status: 500 }),
     new Response("", { status: 200 }),
@@ -83,7 +83,7 @@ test("HTTP errors, unsupported payloads and empty extraction cannot become docum
   }
 });
 
-test("Firecrawl uses its REST contract and rejects failed or empty results", async () => {
+void test("Firecrawl uses its REST contract and rejects failed or empty results", async () => {
   let calls = 0;
   const source = await loadSource(
     { url: "https://example.com/post" },
@@ -140,7 +140,7 @@ test("Firecrawl uses its REST contract and rejects failed or empty results", asy
   }
 });
 
-test("URL normalization blocks private, encoded, local and metadata destinations", async () => {
+void test("URL normalization blocks private, encoded, local and metadata destinations", async () => {
   for (const url of [
     "http://127.0.0.1",
     "http://2130706433",
@@ -183,7 +183,7 @@ test("URL normalization blocks private, encoded, local and metadata destinations
   assert.equal(requested, false);
 });
 
-test("each redirect is validated and credentials never follow another origin", async () => {
+void test("each redirect is validated and credentials never follow another origin", async () => {
   const visited: string[] = [];
   await assert.rejects(
     fetchPublicText("https://example.com", {
@@ -229,7 +229,7 @@ test("each redirect is validated and credentials never follow another origin", a
   assert.equal(dnsCalls, 2);
 });
 
-test("redirects are bounded and safe redirect final URLs are retained", async () => {
+void test("redirects are bounded and safe redirect final URLs are retained", async () => {
   const source = await loadSource(
     { url: "https://example.com/old" },
     {
@@ -262,7 +262,7 @@ test("redirects are bounded and safe redirect final URLs are retained", async ()
   assert.equal(calls, 2);
 });
 
-test("deadline includes unresolved DNS, slow headers and stalled response bodies", async () => {
+void test("deadline includes unresolved DNS, slow headers and stalled response bodies", async () => {
   for (const options of [
     {
       lookup: async () => new Promise<never>(() => undefined),
@@ -293,7 +293,7 @@ test("deadline includes unresolved DNS, slow headers and stalled response bodies
   }
 });
 
-test("response size limits apply even without Content-Length", async () => {
+void test("response size limits apply even without Content-Length", async () => {
   for (const response of [
     new Response("123456", { headers: { "content-length": "6" } }),
     new Response(
@@ -317,7 +317,7 @@ test("response size limits apply even without Content-Length", async () => {
   }
 });
 
-test("RSS discovers full content, dates and relative links; summary-only items need extraction", async () => {
+void test("RSS discovers full content, dates and relative links; summary-only items need extraction", async () => {
   const rss = `<rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
     <item><title>Release</title><link>/release</link><pubDate>Thu, 24 Sep 2026 11:00:00 GMT</pubDate><content:encoded><![CDATA[<p>Full release content.</p>]]></content:encoded></item>
     <item><title>Summary</title><link>https://example.com/summary</link><pubDate>Thu, 24 Sep 2026 10:00:00 GMT</pubDate><description>Short summary</description></item>
@@ -335,7 +335,7 @@ test("RSS discovers full content, dates and relative links; summary-only items n
   assert.equal(values[1].text, undefined);
 });
 
-test("Atom links and content are normalized; malformed or entity-bearing feeds fail", async () => {
+void test("Atom links and content are normalized; malformed or entity-bearing feeds fail", async () => {
   const atom =
     '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Update</title><link rel="self" href="https://example.com/api"/><link rel="alternate" href="https://example.com/update"/><updated>2026-09-24T11:00:00Z</updated><content type="html">&lt;p&gt;Atom content.&lt;/p&gt;</content></entry></feed>';
   const values = await discoverSources(
@@ -357,7 +357,7 @@ test("Atom links and content are normalized; malformed or entity-bearing feeds f
   }
 });
 
-test("JSON file sources use the configured directory and enforce structure and size", async () => {
+void test("JSON file sources use the configured directory and enforce structure and size", async () => {
   const directory = await mkdtemp(join(tmpdir(), "postiz-sources-"));
   try {
     await writeFile(
@@ -402,7 +402,7 @@ test("JSON file sources use the configured directory and enforce structure and s
   }
 });
 
-test("GetXAPI search uses Bearer auth, exact fields, pagination and filtering", async () => {
+void test("GetXAPI search uses Bearer auth, exact fields, pagination and filtering", async () => {
   const calls: URL[] = [];
   const values = await discoverSources(
     [
@@ -453,7 +453,7 @@ test("GetXAPI search uses Bearer auth, exact fields, pagination and filtering", 
   assert.equal(values[0].publishedAt, "2026-09-24T11:00:00.000Z");
 });
 
-test("GetXAPI user reads userName; empty tweets succeed and page caps stop billing", async () => {
+void test("GetXAPI user reads userName; empty tweets succeed and page caps stop billing", async () => {
   let calls = 0;
   const empty = await discoverSources(
     [{ type: "getx-user", userName: "@Example", maxPages: 5 }],
@@ -491,7 +491,7 @@ test("GetXAPI user reads userName; empty tweets succeed and page caps stop billi
   assert.equal(calls, 2);
 });
 
-test("GetXAPI errors and repeated cursors are surfaced instead of content", async () => {
+void test("GetXAPI errors and repeated cursors are surfaced instead of content", async () => {
   for (const response of [
     json({ error: "balance exhausted" }, 402),
     json({ tweets: "invalid", has_more: false }),
@@ -521,7 +521,7 @@ test("GetXAPI errors and repeated cursors are surfaced instead of content", asyn
   );
 });
 
-test("discovery deduplicates X URL aliases and enforces global limits without extra calls", async () => {
+void test("discovery deduplicates X URL aliases and enforces global limits without extra calls", async () => {
   const values = await discoverSources(
     [
       {

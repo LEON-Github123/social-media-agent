@@ -44,7 +44,7 @@ function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
-test("lists integrations using the configured Docker prefix and raw Authorization", async () => {
+void test("lists integrations using the configured Docker prefix and raw Authorization", async () => {
   const { client, calls } = setup([
     json([
       {
@@ -81,7 +81,7 @@ test("lists integrations using the configured Docker prefix and raw Authorizatio
   assert.equal(calls[0].options.redirect, "error");
 });
 
-test("creates a draft with the real X schema and normalizes the array receipt", async () => {
+void test("creates a draft with the real X schema and normalizes the array receipt", async () => {
   const { client, calls } = setup([
     json([{ postId: "post-1", integration: "x-123" }]),
   ]);
@@ -110,7 +110,7 @@ test("creates a draft with the real X schema and normalizes the array receipt", 
   ]);
 });
 
-test("schedules a thread in UTC and associates upload receipts with its first part", async () => {
+void test("schedules a thread in UTC and associates upload receipts with its first part", async () => {
   const media = [
     { id: "media-1", path: "https://postiz.example.com/uploads/image.png" },
   ];
@@ -133,7 +133,7 @@ test("schedules a thread in UTC and associates upload receipts with its first pa
   ]);
 });
 
-test("rejects immediate publishing, unsafe dates and empty content before any network call", async () => {
+void test("rejects immediate publishing, unsafe dates and empty content before any network call", async () => {
   const { client, calls } = setup([]);
   const inputs = [
     { mode: "now", content: "Hello" },
@@ -163,7 +163,7 @@ test("rejects immediate publishing, unsafe dates and empty content before any ne
   assert.equal(calls.length, 0);
 });
 
-test("server errors and HTTP request timeout leave the create outcome unknown with no retry", async () => {
+void test("server errors and HTTP request timeout leave the create outcome unknown with no retry", async () => {
   for (const status of [408, 500, 502, 503]) {
     const { client, calls } = setup([json({ error: API_KEY }, status)]);
     await assert.rejects(
@@ -183,7 +183,7 @@ test("server errors and HTTP request timeout leave the create outcome unknown wi
   }
 });
 
-test("known 4xx refusals remain explicit and do not expose upstream response text", async () => {
+void test("known 4xx refusals remain explicit and do not expose upstream response text", async () => {
   for (const status of [400, 401, 403, 404, 409, 429]) {
     const { client, calls } = setup([
       json({ error: `Upstream echoed ${API_KEY}` }, status),
@@ -207,7 +207,7 @@ test("known 4xx refusals remain explicit and do not expose upstream response tex
   }
 });
 
-test("network failure after submission is unknown and redacts exception messages", async () => {
+void test("network failure after submission is unknown and redacts exception messages", async () => {
   const { client, calls } = setup([
     new Error(`network diagnostics: ${API_KEY}`),
   ]);
@@ -224,7 +224,7 @@ test("network failure after submission is unknown and redacts exception messages
   assert.equal(calls.length, 1);
 });
 
-test("a timed-out create aborts the request and never issues a second POST", async () => {
+void test("a timed-out create aborts the request and never issues a second POST", async () => {
   let count = 0;
   let observedAbort = false;
   const fetchImpl: typeof globalThis.fetch = async (_url, options) => {
@@ -258,7 +258,7 @@ test("a timed-out create aborts the request and never issues a second POST", asy
   assert.equal(observedAbort, true);
 });
 
-test("unusable success receipts stay unknown rather than becoming false publication success", async () => {
+void test("unusable success receipts stay unknown rather than becoming false publication success", async () => {
   const receipts: unknown[] = [
     [],
     { postId: "post-1", integration: "x-123" },
@@ -293,7 +293,7 @@ test("unusable success receipts stay unknown rather than becoming false publicat
   );
 });
 
-test("reads the real list envelope and preserves published state, missing receipts and future states", async () => {
+void test("reads the real list envelope and preserves published state, missing receipts and future states", async () => {
   const row = {
     id: "post-1",
     content: "Hello",
@@ -332,7 +332,7 @@ test("reads the real list envelope and preserves published state, missing receip
   assert.equal(url.searchParams.get("endDate"), "2099-07-02T00:00:00.000Z");
 });
 
-test("bad list responses and reversed ranges are not silently treated as empty", async () => {
+void test("bad list responses and reversed ranges are not silently treated as empty", async () => {
   for (const payload of [[], {}, { posts: [{ id: "broken" }] }]) {
     const { client } = setup([json(payload)]);
     await assert.rejects(
@@ -355,7 +355,7 @@ test("bad list responses and reversed ranges are not silently treated as empty",
   assert.equal(calls.length, 0);
 });
 
-test("uploads a local file as multipart and returns only Postiz's media receipt", async () => {
+void test("uploads a local file as multipart and returns only Postiz's media receipt", async () => {
   const directory = await mkdtemp(join(tmpdir(), "postiz-upload-"));
   try {
     const localPath = join(directory, "image.png");
@@ -392,7 +392,7 @@ test("uploads a local file as multipart and returns only Postiz's media receipt"
   }
 });
 
-test("rejects non-media paths without reading or sending them", async () => {
+void test("rejects non-media paths without reading or sending them", async () => {
   const { client, calls } = setup([]);
   await assert.rejects(
     client.uploadFile(".env"),
@@ -402,7 +402,7 @@ test("rejects non-media paths without reading or sending them", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("configuration errors never repeat credentials or accept ambiguous API destinations", () => {
+void test("configuration errors never repeat credentials or accept ambiguous API destinations", () => {
   for (const baseUrl of [
     "not a URL",
     "https://example.com",

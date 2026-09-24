@@ -10,16 +10,22 @@ on:
       - "Dockerfile.postiz*"
       - "package.json"
       - "yarn.lock"
-      - "tsconfig.postiz.json"
+      - "tsconfig*.json"
+      - "eslint.config.*"
       - ".github/workflows/postiz-worker.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: postiz-worker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   worker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,3 +37,33 @@ jobs:
       - run: yarn postiz:test
       - run: yarn postiz:build
       - run: node dist-postiz/src/postiz/cli.js --help
+      - name: Build and verify the worker container
+        run: |
+          docker build --file Dockerfile.postiz --tag postiz-content-worker:ci .
+          docker run --rm --network none --read-only postiz-content-worker:ci --help
+          run_content() {
+            docker run --rm --network none --read-only \
+              --cap-drop ALL --security-opt no-new-privileges:true \
+              --mount type=volume,source=postiz-worker-ci-data,target=/data \
+              --mount "type=bind,source=${GITHUB_WORKSPACE}/config/postiz,target=/app/content,readonly" \
+              --env CONTENT_BRAND_FILE=/app/content/brand.example.json \
+              --env CONTENT_DB_PATH=/data/content.sqlite \
+              --env POSTIZ_INTEGRATION_ID=ci-fixture \
+              postiz-content-worker:ci "$@"
+          }
+          run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-created.json"
+          run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-repeated.json"
+          run_content show --state queued > "${RUNNER_TEMP}/postiz-listed.json"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const read = (name) => JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/postiz-${name}.json`, 'utf8'));
+          const created = read('created');
+          const repeated = read('repeated');
+          const listed = read('listed');
+          assert.equal(created.state, 'queued');
+          assert.equal(repeated.id, created.id);
+          assert.equal(listed.length, 1);
+          assert.equal(listed[0].id, created.id);
+          console.log('Container entrypoint, non-root volume persistence and deduplication passed.');
+          JS

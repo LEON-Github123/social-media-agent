@@ -107,7 +107,7 @@ async function ready(store: ContentJobStore) {
   });
 }
 
-test("source URL aliases and updated source text return the original job without regenerating", (t) => {
+void test("source URL aliases and updated source text return the original job without regenerating", (t) => {
   const { store, job } = setup(t);
   const duplicate = enqueueContent(store, {
     ...input,
@@ -123,7 +123,7 @@ test("source URL aliases and updated source text return the original job without
   assert.equal(store.list().length, 1);
 });
 
-test("X and Twitter handles, domains and photo links share a persistent status identity", (t) => {
+void test("X and Twitter handles, domains and photo links share a persistent status identity", (t) => {
   const { store } = setup(t);
   const first = enqueueContent(store, {
     ...input,
@@ -149,7 +149,7 @@ test("X and Twitter handles, domains and photo links share a persistent status i
   }
 });
 
-test("approved generation submits once; acceptance is separate from X publication", async (t) => {
+void test("approved generation submits once; acceptance is separate from X publication", async (t) => {
   const { store, job } = setup(t);
   let generations = 0;
   const generate = async () => {
@@ -168,7 +168,7 @@ test("approved generation submits once; acceptance is separate from X publicatio
   assert.equal(store.get(job.id)?.platformPostId, null);
 });
 
-test("ambiguous create is unknown and cannot be retried or submitted again", async (t) => {
+void test("ambiguous create is unknown and cannot be retried or submitted again", async (t) => {
   const { store, job } = setup(t);
   await ready(store);
   const remote = api({
@@ -189,7 +189,7 @@ test("ambiguous create is unknown and cannot be retried or submitted again", asy
   assert.equal(remote.creates(), 1);
 });
 
-test("a confirmed 401 needs explicit retry, preserving the generated content", async (t) => {
+void test("a confirmed 401 needs explicit retry, preserving the generated content", async (t) => {
   const { store, job } = setup(t);
   await ready(store);
   const remote = api({
@@ -206,7 +206,7 @@ test("a confirmed 401 needs explicit retry, preserving the generated content", a
   assert.deepEqual(store.get(job.id)?.output, output);
 });
 
-test("lease loss after remote acceptance recovers as unknown without a second POST", async (t) => {
+void test("lease loss after remote acceptance recovers as unknown without a second POST", async (t) => {
   const { store, advance } = setup(t);
   await ready(store);
   const remote = api({
@@ -228,7 +228,7 @@ test("lease loss after remote acceptance recovers as unknown without a second PO
   assert.equal(remote.creates(), 1);
 });
 
-test("an integration for a different platform cannot receive this X job", async (t) => {
+void test("an integration for a different platform cannot receive this X job", async (t) => {
   const { store } = setup(t);
   await ready(store);
   const remote = api({ identifier: "linkedin" });
@@ -246,7 +246,7 @@ test("an integration for a different platform cannot receive this X job", async 
   assert.equal(remote.creates(), 0);
 });
 
-test("missing X receipt remains null and can later become a real numeric ID", async (t) => {
+void test("missing X receipt remains null and can later become a real numeric ID", async (t) => {
   const { store, job } = setup(t);
   await ready(store);
   let releaseId = "missing";
@@ -280,7 +280,7 @@ test("missing X receipt remains null and can later become a real numeric ID", as
   );
 });
 
-test("manual unknown binding verifies content and integration before accepting an existing ID", async (t) => {
+void test("manual unknown binding verifies content and integration before accepting an existing ID", async (t) => {
   const { store, job } = setup(t);
   await ready(store);
   const failed = api({
@@ -320,7 +320,7 @@ test("manual unknown binding verifies content and integration before accepting a
   assert.equal(remote.creates(), 0);
 });
 
-test("invalid calendar dates and timezone-less schedules are rejected before enqueue", (t) => {
+void test("invalid calendar dates and timezone-less schedules are rejected before enqueue", (t) => {
   const { store } = setup(t);
   for (const date of [
     "2030-02-31T12:00:00Z",
@@ -330,7 +330,7 @@ test("invalid calendar dates and timezone-less schedules are rejected before enq
     assert.throws(() => enqueueContent(store, input, date), /ISO/);
 });
 
-test("a failed quality review never enters the publication queue", async (t) => {
+void test("a failed quality review never enters the publication queue", async (t) => {
   const { store } = setup(t);
   assert.equal(
     (

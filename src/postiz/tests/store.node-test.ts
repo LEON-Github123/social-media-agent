@@ -66,7 +66,7 @@ function ready(store: ContentJobStore, id = "job-a", brandId = "brand-a") {
   });
 }
 
-test("jobs survive reopening and both stable ID and brand fingerprint prevent duplicates", (t) => {
+void test("jobs survive reopening and both stable ID and brand fingerprint prevent duplicates", (t) => {
   const f = fixture(t);
   const a = f.open();
   const input = request();
@@ -95,7 +95,7 @@ test("jobs survive reopening and both stable ID and brand fingerprint prevent du
   );
 });
 
-test("two concurrent SQLite connections can claim the same job only once", async (t) => {
+void test("two concurrent SQLite connections can claim the same job only once", async (t) => {
   const f = fixture(t);
   const store = f.open();
   store.enqueue(request());
@@ -162,7 +162,7 @@ test("two concurrent SQLite connections can claim the same job only once", async
   assert.equal(store.get("job-a")?.attemptCount, 1);
 });
 
-test("both claim phases respect brand isolation even with an explicit other-brand job ID", (t) => {
+void test("both claim phases respect brand isolation even with an explicit other-brand job ID", (t) => {
   const f = fixture(t);
   const a = f.open();
   const b = f.open();
@@ -202,7 +202,7 @@ test("both claim phases respect brand isolation even with an explicit other-bran
   );
 });
 
-test("expired generation leases cannot finish, fail, renew, or overwrite a new owner", (t) => {
+void test("expired generation leases cannot finish, fail, renew, or overwrite a new owner", (t) => {
   const f = fixture(t);
   const a = f.open();
   const b = f.open();
@@ -234,7 +234,7 @@ test("expired generation leases cannot finish, fail, renew, or overwrite a new o
   assert.deepEqual(a.get(current.id)?.output, { current: true });
 });
 
-test("heartbeats extend a live lease without permitting a stale token to renew", (t) => {
+void test("heartbeats extend a live lease without permitting a stale token to renew", (t) => {
   const f = fixture(t);
   const store = f.open();
   store.enqueue(request());
@@ -257,7 +257,7 @@ test("heartbeats extend a live lease without permitting a stale token to renew",
   );
 });
 
-test("a crash after the submission claim becomes unknown and can never be automatically resubmitted", (t) => {
+void test("a crash after the submission claim becomes unknown and can never be automatically resubmitted", (t) => {
   const f = fixture(t);
   const a = f.open();
   ready(a);
@@ -285,7 +285,7 @@ test("a crash after the submission claim becomes unknown and can never be automa
   assert.deepEqual(b.recoverExpired(), { generation: 0, submission: 0 });
 });
 
-test("a Postiz accepted draft is submitted locally, not falsely marked as platform published", (t) => {
+void test("a Postiz accepted draft is submitted locally, not falsely marked as platform published", (t) => {
   const f = fixture(t);
   const store = f.open();
   ready(store);
@@ -337,7 +337,7 @@ test("a Postiz accepted draft is submitted locally, not falsely marked as platfo
   );
 });
 
-test("an ambiguous response quarantines the job until an explicitly verified existing ID is bound", (t) => {
+void test("an ambiguous response quarantines the job until an explicitly verified existing ID is bound", (t) => {
   const f = fixture(t);
   const store = f.open();
   ready(store);
@@ -362,7 +362,7 @@ test("an ambiguous response quarantines the job until an explicitly verified exi
   );
 });
 
-test("oldest-updated ordering rotates submitted sync batches after recording platform results", (t) => {
+void test("oldest-updated ordering rotates submitted sync batches after recording platform results", (t) => {
   const f = fixture(t);
   const store = f.open();
   for (const id of ["one", "two", "three", "four"]) {
@@ -416,7 +416,7 @@ test("oldest-updated ordering rotates submitted sync batches after recording pla
   );
 });
 
-test("missing remote results rotate after a sync check without inferring a provider state", (t) => {
+void test("missing remote results rotate after a sync check without inferring a provider state", (t) => {
   const f = fixture(t);
   const store = f.open();
   for (const id of ["one", "two", "three", "four"]) {
@@ -462,7 +462,7 @@ test("missing remote results rotate after a sync check without inferring a provi
   );
 });
 
-test("definitive submission rejection requires explicit retry while rejected content is regenerated", (t) => {
+void test("definitive submission rejection requires explicit retry while rejected content is regenerated", (t) => {
   const f = fixture(t);
   const store = f.open();
   ready(store);
@@ -506,7 +506,7 @@ test("definitive submission rejection requires explicit retry while rejected con
   );
 });
 
-test("one existing Postiz receipt cannot silently bind to two content jobs", (t) => {
+void test("one existing Postiz receipt cannot silently bind to two content jobs", (t) => {
   const f = fixture(t);
   const store = f.open();
   for (const id of ["one", "two"]) {
@@ -527,7 +527,7 @@ test("one existing Postiz receipt cannot silently bind to two content jobs", (t)
   assert.equal(store.get("two")?.state, "unknown");
 });
 
-test("invalid scheduling and unsupported modes do not create content jobs", (t) => {
+void test("invalid scheduling and unsupported modes do not create content jobs", (t) => {
   const f = fixture(t);
   const store = f.open();
   assert.throws(

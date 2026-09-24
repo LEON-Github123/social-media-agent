@@ -10,7 +10,7 @@ import { readConfig, safeError } from "../config.js";
 
 const execute = promisify(execFile);
 
-test("configuration rejects invalid automation controls and strips known credentials from errors", () => {
+void test("configuration rejects invalid automation controls and strips known credentials from errors", () => {
   assert.equal(readConfig({}).discoveryIntervalMs, 86_400_000);
   assert.equal(readConfig({ CONTENT_AUTO_SUBMIT: "false" }).autoSubmit, false);
   assert.throws(() => readConfig({ CONTENT_AUTO_SUBMIT: "yes" }));
@@ -24,7 +24,7 @@ test("configuration rejects invalid automation controls and strips known credent
   );
 });
 
-test("CLI completes enqueue -> model workflow -> Postiz draft -> sync, and a rerun sends nothing", async (t) => {
+void test("CLI completes enqueue -> model workflow -> Postiz draft -> sync, and a rerun sends nothing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "postiz-cli-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let modelCalls = 0;
