@@ -175,6 +175,79 @@ export class ContentJobStore extends ContentFeedbackStore {
     this.db.close();
   }
 
+  /** Bind a brand to one Postiz account before any brand-scoped write. */
+  bindBrandIntegration(brandId: string, integrationId: string): void {
+    requiredText(brandId, "brandId");
+    requiredText(integrationId, "integrationId");
+    if (integrationId !== integrationId.trim() || integrationId.length > 200) {
+      throw new TypeError(
+        "integrationId must be a trimmed account ID of at most 200 characters",
+      );
+    }
+    this.transaction(() => {
+      const binding = this.db
+        .prepare(
+          "SELECT integration_id FROM brand_integrations WHERE brand_id = ?",
+        )
+        .get(brandId);
+      if (binding) {
+        if (binding.integration_id !== integrationId) {
+          throw new JobConflictError(
+            "Brand is already bound to another Postiz integration",
+          );
+        }
+        return;
+      }
+      for (const row of this.db
+        .prepare(
+          "SELECT input_json FROM postiz_content_jobs WHERE brand_id = ?",
+        )
+        .all(brandId)) {
+        let storedInput: unknown;
+        try {
+          storedInput = JSON.parse(String(row.input_json));
+        } catch {
+          throw new JobConflictError(
+            "Existing brand job has an invalid Postiz integration ID",
+          );
+        }
+        const account =
+          storedInput &&
+          typeof storedInput === "object" &&
+          !Array.isArray(storedInput)
+            ? (storedInput as Record<string, unknown>).integrationId
+            : undefined;
+        if (
+          typeof account !== "string" ||
+          !account.trim() ||
+          account !== account.trim() ||
+          account.length > 200
+        ) {
+          throw new JobConflictError(
+            "Existing brand job has an invalid Postiz integration ID",
+          );
+        }
+        if (account !== integrationId) {
+          throw new JobConflictError(
+            "Existing brand job uses another Postiz integration",
+          );
+        }
+      }
+      this.db
+        .prepare(
+          "INSERT INTO brand_integrations (brand_id,integration_id,bound_at) VALUES (?,?,?)",
+        )
+        .run(brandId, integrationId, this.now());
+      this.recordAudit({
+        brandId,
+        eventType: "brand.integration_bound",
+        actor: "system",
+        reason: "Brand bound to its Postiz integration",
+        after: { brandId, integrationId },
+      });
+    });
+  }
+
   private fromRow(row: Row): ContentJob {
     return {
       id: String(row.id),
@@ -337,6 +410,24 @@ export class ContentJobStore extends ContentFeedbackStore {
     }
     const inputJson = json(input.input);
     return this.transaction(() => {
+      const binding = this.db
+        .prepare(
+          "SELECT integration_id FROM brand_integrations WHERE brand_id = ?",
+        )
+        .get(input.brandId);
+      if (binding) {
+        const account =
+          input.input &&
+          typeof input.input === "object" &&
+          !Array.isArray(input.input)
+            ? (input.input as Record<string, unknown>).integrationId
+            : undefined;
+        if (account !== binding.integration_id) {
+          throw new JobConflictError(
+            "Content job uses another Postiz integration than its brand binding",
+          );
+        }
+      }
       const byId = this.get(input.id);
       const byFingerprint = this.db
         .prepare(
@@ -722,23 +813,44 @@ export class ContentJobStore extends ContentFeedbackStore {
   }
 
   /** The caller must first verify the exact existing Postiz ID remotely. */
-  bindUnknown(id: string, receipt: PostizReceipt): ContentJob {
+  bindUnknown(
+    id: string,
+    receipt: PostizReceipt,
+    action: OperatorAction = {},
+  ): ContentJob {
     const values = this.receiptValues(receipt);
-    const result = this.db
-      .prepare(
-        `
-      UPDATE postiz_content_jobs SET state = 'submitted', postiz_id = ?,
-        postiz_state = ?, platform_post_id = ?, platform_url = ?,
-        last_error = NULL, failure_phase = NULL, updated_at = ?
-      WHERE id = ? AND state = 'unknown'
-    `,
-      )
-      .run(...values, this.now(), id);
-    if (Number(result.changes) !== 1)
-      throw new JobConflictError(
-        "Only an unknown job can bind an existing Postiz receipt",
-      );
-    return this.requireJob(id);
+    return this.transaction(() => {
+      const before = this.requireJob(id);
+      if (before.state !== "unknown")
+        throw new JobConflictError(
+          "Only an unknown job can bind an existing Postiz receipt",
+        );
+      const holder = this.db
+        .prepare("SELECT id FROM postiz_content_jobs WHERE postiz_id = ?")
+        .get(receipt.postizId);
+      if (holder && holder.id !== id)
+        throw new JobConflictError(
+          "UNIQUE Postiz receipt is already bound to another content job",
+        );
+      const result = this.db
+        .prepare(
+          `UPDATE postiz_content_jobs SET state = 'submitted', postiz_id = ?,
+            postiz_state = ?, platform_post_id = ?, platform_url = ?,
+            last_error = NULL, failure_phase = NULL, updated_at = ?
+            WHERE id = ? AND state = 'unknown'`,
+        )
+        .run(...values, this.now(), id);
+      if (Number(result.changes) !== 1)
+        throw new JobConflictError(
+          "Only an unknown job can bind an existing Postiz receipt",
+        );
+      const after = this.requireJob(id);
+      this.auditJob("job.reconciled", before, after, {
+        ...action,
+        reason: action.reason ?? "Verified existing Postiz receipt",
+      });
+      return after;
+    });
   }
 
   /**

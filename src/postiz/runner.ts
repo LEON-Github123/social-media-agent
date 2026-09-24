@@ -293,9 +293,9 @@ function queryWindow(jobs: ContentJob[]): {
   ]);
   return {
     startDate: new Date(Math.min(...times) - 86_400_000).toISOString(),
-    endDate: new Date(
-      Math.max(Date.now(), ...times) + 365 * 86_400_000,
-    ).toISOString(),
+    // Postiz has no public lookup by ID. Human scheduling can move an existing
+    // draft beyond any rolling window, so include its entire possible future.
+    endDate: "9999-12-31T23:59:59.999Z",
   };
 }
 
@@ -334,9 +334,17 @@ export async function syncJob(
   client: PostizClient,
   job: ContentJob,
   bindPostizId?: string,
+  reconciliation: { acceptEdited?: boolean; reason?: string } = {},
 ): Promise<ContentJob> {
   if (bindPostizId && job.state !== "unknown")
     throw new Error("Manual binding is only for an unknown submission");
+  if (
+    reconciliation.acceptEdited &&
+    (!bindPostizId || !reconciliation.reason?.trim())
+  )
+    throw new Error(
+      "Accepting edited content requires an explicit Postiz ID and a verification reason",
+    );
   const postizId = bindPostizId || job.postizId;
   if (!postizId)
     throw new Error(
@@ -353,11 +361,16 @@ export async function syncJob(
     throw new Error("Postiz record belongs to a different integration");
   if (bindPostizId) {
     const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
-    if (normalize(post.content) !== normalize(jobOutput(job).post))
+    const edited = normalize(post.content) !== normalize(jobOutput(job).post);
+    if (edited && !reconciliation.acceptEdited)
       throw new Error(
-        "Postiz record content differs; verify the record manually before binding",
+        "Postiz record content differs; verify it manually, then use --accept-edited --reason TEXT to bind this existing record",
       );
-    const bound = store.bindUnknown(job.id, platformReceipt(post));
+    const bound = store.bindUnknown(job.id, platformReceipt(post), {
+      reason: reconciliation.acceptEdited
+        ? `Operator verified the existing Postiz record after editing: ${reconciliation.reason!.trim()}`
+        : "Verified existing Postiz record with matching content and integration",
+    });
     observePostiz(store, bound, post);
     return bound;
   }

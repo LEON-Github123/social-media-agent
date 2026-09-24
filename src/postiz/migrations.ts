@@ -201,6 +201,17 @@ const migrations: readonly Migration[] = [
       CREATE INDEX writing_model_calls_brand ON writing_model_calls (brand_id, started_at);
     `,
   },
+  {
+    version: 5,
+    name: "brand_integrations",
+    sql: `
+      CREATE TABLE brand_integrations (
+        brand_id TEXT PRIMARY KEY,
+        integration_id TEXT NOT NULL,
+        bound_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

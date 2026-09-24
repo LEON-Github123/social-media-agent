@@ -234,11 +234,11 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
     LANGCHAIN_TRACING_V2: "false",
     NO_PROXY: "127.0.0.1,localhost",
   };
-  const run = (args: string[]) =>
+  const run = (args: string[], overrides: NodeJS.ProcessEnv = {}) =>
     execute(
       process.execPath,
       ["--import", "tsx", resolve("src/postiz/cli.ts"), ...args],
-      { env, timeout: 45_000, maxBuffer: 1_000_000 },
+      { env: { ...env, ...overrides }, timeout: 45_000, maxBuffer: 1_000_000 },
     );
   const enqueued = JSON.parse(
     (await run(["enqueue", "--input-json", inputPath])).stdout,
@@ -246,6 +246,15 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
   assert.equal(enqueued.candidates[0].status, "new");
   assert.equal(modelCalls, 0);
   assert.equal(postCalls, 0);
+  await assert.rejects(
+    run(["work", "--once"], { POSTIZ_INTEGRATION_ID: "other-account" }),
+    /integration|account/i,
+  );
+  assert.equal(
+    modelCalls,
+    0,
+    "Account mismatch must be detected before selection",
+  );
   await assert.rejects(
     execute(
       process.execPath,
@@ -273,6 +282,12 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
   assert.equal(receivedContent, postText);
   assert.equal(modelCalls, 5);
   assert.equal(postCalls, 1);
+  await assert.rejects(
+    run(["submit", "--id", jobs[0].id], {
+      POSTIZ_INTEGRATION_ID: "other-account",
+    }),
+    /integration|account/i,
+  );
   const duplicate = JSON.parse(
     (await run(["enqueue", "--input-json", inputPath])).stdout,
   );
@@ -310,7 +325,9 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
   assert.equal(postCalls, 1);
   receivedContent =
     "A practical developer note, edited in Postiz. https://example.com/release";
-  await run(["sync", "--id", jobs[0].id]);
+  await run(["work", "--once", "--no-submit"], {
+    CONTENT_AUTO_SUBMIT: "false",
+  });
   await run([
     "feedback",
     "--id",

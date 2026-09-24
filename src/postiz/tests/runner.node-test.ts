@@ -336,6 +336,77 @@ void test("invalid calendar dates and timezone-less schedules are rejected befor
     );
 });
 
+void test("edited unknown submissions require an explicit reason and preserve both versions when reconciled", async (t) => {
+  const { store, job } = setup(t);
+  await ready(store);
+  await submitNext({
+    store,
+    client: api({ create: () => new Response("uncertain", { status: 502 }) })
+      .client,
+    brandId: brand.id,
+    leaseMs: 30_000,
+  });
+  let integrationId = "another-account";
+  const content = "A human-edited practical tip. https://example.com/release";
+  const remote = api({
+    posts: () => [
+      {
+        id: "edited-draft",
+        content,
+        publishDate: new Date().toISOString(),
+        state: "DRAFT",
+        releaseId: null,
+        releaseURL: null,
+        integration: { id: integrationId, providerIdentifier: "x" },
+      },
+    ],
+  });
+  const current = () => store.get(job.id)!;
+  await assert.rejects(
+    syncJob(store, remote.client, current(), "edited-draft", {
+      acceptEdited: true,
+    }),
+    /verification reason/,
+  );
+  const confirmation = {
+    acceptEdited: true,
+    reason: "Matched the source and original draft in Postiz",
+  };
+  await assert.rejects(
+    syncJob(store, remote.client, current(), "edited-draft", confirmation),
+    /different integration/,
+  );
+  integrationId = "x-account";
+  await assert.rejects(
+    syncJob(store, remote.client, current(), "edited-draft"),
+    /content differs/,
+  );
+  assert.equal(current().state, "unknown");
+  const bound = await syncJob(
+    store,
+    remote.client,
+    current(),
+    "edited-draft",
+    confirmation,
+  );
+  assert.equal(bound.state, "submitted");
+  assert.equal(bound.postizId, "edited-draft");
+  assert.equal((bound.output as ContentResult).post, output.post);
+  assert.equal(
+    store.listObservations({ brandId: brand.id, jobId: job.id })[0].content,
+    content,
+  );
+  const audit = store
+    .listAuditEvents({ jobId: job.id })
+    .find((item) => item.eventType === "job.reconciled")!;
+  assert.ok(audit);
+  assert.match(audit.reason, /Matched the source/);
+  assert.equal((audit.before as { state: string }).state, "unknown");
+  assert.equal((audit.after as { state: string }).state, "submitted");
+  assert.throws(() => store.retry(job.id));
+  assert.equal(remote.creates(), 0);
+});
+
 void test("new and persisted schedules require explicit draft repair before generation or submission", async (t) => {
   const { store } = setup(t);
   const scheduledInput = {
@@ -508,7 +579,7 @@ void test("historical approved output is rechecked for current source attributio
 void test("sync keeps generated text and every observed edit while tracking a future human schedule and platform receipt", async (t) => {
   const { store, job } = setup(t);
   await ready(store);
-  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  const future = new Date(Date.now() + 800 * 86_400_000).toISOString();
   let content = output.post;
   let state = "DRAFT";
   const remote = api({

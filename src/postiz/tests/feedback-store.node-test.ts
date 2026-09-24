@@ -285,7 +285,7 @@ void test("writing calls count real stages independently from daily starts and p
   );
 });
 
-void test("version four preserves prior jobs and daily reservations and backs up the version-three database", (t) => {
+void test("upgrading version three preserves prior jobs and daily reservations in a consistent backup", (t) => {
   const f = fixture(t);
   const first = f.open();
   const original = submitted(first);
@@ -293,7 +293,7 @@ void test("version four preserves prior jobs and daily reservations and backs up
   f.close(first);
   const previous = new DatabaseSync(f.path);
   previous.exec(
-    "DROP TABLE content_feedback; DROP TABLE postiz_observations; DROP TABLE writing_model_calls; DELETE FROM schema_migrations WHERE version=4;",
+    "DROP TABLE brand_integrations; DROP TABLE content_feedback; DROP TABLE postiz_observations; DROP TABLE writing_model_calls; DELETE FROM schema_migrations WHERE version>=4;",
   );
   previous.close();
   const upgraded = f.open();

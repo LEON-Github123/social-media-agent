@@ -46,7 +46,7 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli status
   yarn postiz:cli feedback --id CONTENT_ID --kind edit|reject|note --reason TEXT [--actor NAME]
   yarn postiz:cli submit --id CONTENT_ID
-  yarn postiz:cli sync --id CONTENT_ID [--postiz-id EXISTING_ID]
+  yarn postiz:cli sync --id CONTENT_ID [--postiz-id EXISTING_ID [--accept-edited --reason TEXT]]
   yarn postiz:cli integrations
 
 Configuration: .env.postiz or CONTENT_ENV_FILE, plus CONTENT_BRAND_FILE.
@@ -96,6 +96,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       "no-submit": { type: "boolean" },
       id: { type: "string" },
       "postiz-id": { type: "string" },
+      "accept-edited": { type: "boolean" },
       state: { type: "string" },
       "refresh-brand": { type: "boolean" },
       "to-draft": { type: "boolean" },
@@ -141,7 +142,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     retry: ["id", "refresh-brand", "to-draft", "reason"],
     history: ["id"],
     submit: ["id"],
-    sync: ["id", "postiz-id"],
+    sync: ["id", "postiz-id", "accept-edited", "reason"],
     integrations: [],
     candidates: ["id"],
     topics: ["id"],
@@ -166,6 +167,15 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     );
   if (values["postiz-id"] && command !== "sync")
     throw new Error("--postiz-id is only accepted by sync");
+  if (
+    command === "sync" &&
+    ((values["accept-edited"] &&
+      (!values["postiz-id"] || !values.reason?.trim())) ||
+      (values.reason !== undefined && !values["accept-edited"]))
+  )
+    throw new Error(
+      "Edited-content reconciliation requires --postiz-id, --accept-edited and --reason together",
+    );
   if (values.media && command !== "enqueue")
     throw new Error("--media is only accepted by enqueue");
   loadEnv({ path: process.env.CONTENT_ENV_FILE || ".env.postiz", quiet: true });
@@ -247,13 +257,22 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const job = store.get(values.id);
     if (!job || job.brandId !== brand.id)
       throw new Error("Job does not exist for the selected brand");
+    if (
+      !["show", "history"].includes(command) &&
+      (job.input as { integrationId?: unknown } | null)?.integrationId !==
+        config.postiz.integrationId
+    )
+      throw new Error("Job belongs to a different configured X integration");
     return job;
   };
+  const requireAccount = () =>
+    store.bindBrandIntegration(brand.id, config.postiz.integrationId);
   const discover = async () => {
     if (!config.sourcesFile) return null;
     const sourceConfigs = await readJsonFile(config.sourcesFile);
     if (!Array.isArray(sourceConfigs))
       throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
+    if (sourceConfigs.length) requireAccount();
     return collectSources({
       store,
       brandId: brand.id,
@@ -266,6 +285,18 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     });
   };
   try {
+    if (
+      [
+        "enqueue",
+        "retry-candidate",
+        "review-topic",
+        "retry",
+        "feedback",
+        "submit",
+        "sync",
+      ].includes(command)
+    )
+      requireAccount();
     if (command === "preview") {
       const sources = await inputSources();
       // Validate settings before reserving a full attempt, but persist before any
@@ -506,7 +537,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       console.log(
         JSON.stringify(
           summary(
-            await syncJob(store, client(), requiredJob(), values["postiz-id"]),
+            await syncJob(store, client(), requiredJob(), values["postiz-id"], {
+              acceptEdited: values["accept-edited"],
+              reason: values.reason,
+            }),
           ),
           null,
           2,
@@ -521,6 +555,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       try {
         do {
           try {
+            if (
+              config.postiz.integrationId ||
+              store.list({ brandId: brand.id, limit: 1 }).length ||
+              store.listCandidates({ brandId: brand.id, limit: 1 }).length
+            )
+              requireAccount();
             store.recoverExpired();
             try {
               const collection = await discover();
@@ -616,7 +656,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
               }
             }
             if (
-              autoSubmit &&
+              config.postiz.apiKey &&
               store.list({ brandId: brand.id, state: "submitted", limit: 1 })
                 .length
             )

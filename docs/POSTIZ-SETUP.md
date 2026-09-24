@@ -124,6 +124,12 @@ bash deploy/postiz/compose.sh run --rm content-worker integrations
 
 将结果中的目标账号 ID 填入 `POSTIZ_INTEGRATION_ID`。这是 Postiz 的 integration ID，
 不是 X 用户名，也不是 X 用户 ID。
+首次入队或运行会在 SQLite 中固定该品牌与 X integration 的关系。后续切换环境变量
+不能把历史候选或任务改送到另一个账号；遇到不匹配会在采集、模型或提交请求前停止。
+本期一个品牌只服务一个 X 账号。确需经营另一个账号时，使用独立品牌 ID 或独立数据库，
+原库继续保留用于原账号的回执同步。升级时也会检查已有任务中的账号身份。
+旧版仅有候选、尚无内容任务的数据库没有保存账号身份；升级前须核对原来的
+`POSTIZ_INTEGRATION_ID`，程序无法从这些旧候选反推出原账号。
 API 认证是 `Authorization: API_KEY`，不额外加 `Bearer`；客户端已处理。
 来源：[Postiz Public API](https://docs.postiz.com/public-api/introduction)。
 
@@ -276,6 +282,16 @@ Postiz 接收排期后，由它负责后续平台重试；本 worker 不同时�
 bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID --postiz-id POSTIZ_POST_ID
 ```
 
+如果回执丢失后已在 Postiz 修改正文，普通对账会拒绝文案不一致。先在 Postiz 核对
+账号、来源与草稿身份，再明确接受该已有记录并写下核对依据：
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID --postiz-id POSTIZ_POST_ID --accept-edited --reason "核对账号、原始来源和编辑记录，确认这是该任务的草稿"
+```
+
+此操作只绑定已有记录，保存核对理由、原始生成稿和观察到的修改稿；不会新建帖子。
+目标必须属于原任务的 X integration，且不能已被另一任务绑定。
+
 普通可重试的内容处理失败可以使用 `retry --id JOB_ID`；它不能取代未知外部写入
 的核对。`sync` 中确认的 Postiz ID 与最终 X 帖子 ID 是两个不同字段。
 
@@ -309,8 +325,10 @@ token 数或费用。`firstObservedDrafts` 表示今天首次观察到的草稿�
 
 同步保留原始生成稿和观察到的 Postiz 正文快照；连续相同快照不重复保存，修改后改回
 原文仍保留中间版本。`edited` 只代表观察稿与生成稿不同，不能推断具体是谁修改。
-worker 不将生成稿写回覆盖 Postiz 编辑。自动对账包含未来 365 天的排期；未找到远端
+worker 不将生成稿写回覆盖 Postiz 编辑。自动对账包含远期排期；未找到远端
 记录不代表发布失败，也不会触发重新创建。
+配置了 Postiz API key 后，即使 `CONTENT_AUTO_SUBMIT=false` 或使用 `work --no-submit`，
+worker 仍会同步已经提交的任务；创建开关不再阻止改稿、排期与最终回执的读取。
 
 反馈类型为 `edit`、`reject` 或 `note`，只形成供人工复盘的原因记录和汇总，不自动修改
 品牌规则，不代替 Postiz 中的删除、修改或排期。经操作者确认后再编辑品牌 JSON。

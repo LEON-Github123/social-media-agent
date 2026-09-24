@@ -17,6 +17,7 @@ function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "postiz-content-store-"));
   const path = join(directory, "jobs.sqlite");
   const connections = new Set<ContentJobStore>();
+  const rawConnections = new Set<DatabaseSync>();
   let clock = 1000;
   const open = () => {
     const store = new ContentJobStore(path, { now: () => clock });
@@ -29,12 +30,18 @@ function fixture(t: TestContext) {
   };
   t.after(() => {
     for (const store of connections) store.close();
+    for (const db of rawConnections) db.close();
     rmSync(directory, { recursive: true, force: true });
   });
   return {
     path,
     open,
     close,
+    raw: () => {
+      const db = new DatabaseSync(path);
+      rawConnections.add(db);
+      return db;
+    },
     advance: (ms: number) => {
       clock += ms;
     },
@@ -594,8 +601,7 @@ void test("versioned migrations preserve every legacy state and create a WAL-con
   const initial = f.open();
   assert.equal(initial.migrationBackupPath, null);
   f.close(initial);
-  const legacy = new DatabaseSync(f.path);
-  t.after(() => legacy.close());
+  const legacy = f.raw();
   legacy.exec("PRAGMA journal_mode = WAL;");
   // Recreate the original unversioned installation regardless of later tables.
   for (const row of legacy
@@ -780,8 +786,7 @@ void test("explicit repair refreshes a failed snapshot or draft mode without cha
 void test("repair and retry reject active or uncertain jobs and any stored provider receipt", (t) => {
   const f = fixture(t);
   const store = f.open();
-  const raw = new DatabaseSync(f.path);
-  t.after(() => raw.close());
+  const raw = f.raw();
   for (const state of [
     "queued",
     "processing",
