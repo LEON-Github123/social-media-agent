@@ -1,0 +1,33 @@
+name: Postiz content worker
+
+on:
+  pull_request:
+    paths:
+      - "src/postiz/**"
+      - "src/agents/generate-post/nodes/**"
+      - "config/postiz/**"
+      - "deploy/postiz/**"
+      - "Dockerfile.postiz*"
+      - "package.json"
+      - "yarn.lock"
+      - "tsconfig.postiz.json"
+      - ".github/workflows/postiz-worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm install --global yarn@1.22.22
+      - run: yarn install --frozen-lockfile --ignore-scripts
+      - run: yarn postiz:check
+      - run: yarn postiz:test
+      - run: yarn postiz:build
+      - run: node dist-postiz/src/postiz/cli.js --help

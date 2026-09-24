@@ -32,7 +32,12 @@
     "get:used_links": "yarn tsx scripts/get-all-used-links.ts",
     "graph:delete:run_thread": "yarn tsx scripts/delete-run-thread.ts",
     "langgraph:up": "langgraph up --watch --port 54367",
-    "langgraph:in_mem:up": "npx @langchain/langgraph-cli@latest dev --port 54367"
+    "langgraph:in_mem:up": "npx @langchain/langgraph-cli@latest dev --port 54367",
+    "postiz:cli": "node --import tsx src/postiz/cli.ts",
+    "postiz:worker": "node --import tsx src/postiz/cli.ts work",
+    "postiz:build": "tsc -p tsconfig.postiz.json",
+    "postiz:test": "node --import tsx --test src/postiz/tests/*.node-test.ts",
+    "postiz:check": "tsc -p tsconfig.postiz.json --noEmit"
   },
   "dependencies": {
     "@arcadeai/arcadejs": "^2.4.1",
@@ -66,6 +71,7 @@
     "sharp": "^0.35.4",
     "snoowrap": "^1.23.0",
     "twitter-api-v2": "^1.29.1",
+    "twitter-text": "3.1.0",
     "uuid": "^14.0.2",
     "xml2js": "^0.6.2",
     "zod": "^4.6.5"
@@ -91,10 +97,11 @@
     "@types/node": "^26.6.1",
     "@types/passport": "^1.0.17",
     "@types/passport-twitter": "^1.0.40",
+    "@types/twitter-text": "^3.1.10",
     "@types/xml2js": "^0.4.14",
-    "@typescript/native": "npm:typescript@^7.0.2",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.70.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "cross-env": "^10.1.0",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",

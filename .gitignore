@@ -43,3 +43,12 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Local content jobs, credentials and generated worker build
+.content-agent/
+dist-postiz/
+content/
+deploy/postiz/upstream/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

@@ -1,3 +1,17 @@
+## Postiz integration in this fork
+
+This fork adds a standalone content worker that reuses the report and writing prompts
+with the open-source LangGraph library, then submits drafts or explicitly scheduled
+posts to a self-hosted Postiz instance. Use the `postiz:*` commands for this workflow;
+`yarn dev` still starts the original upstream Agent Server development workflow.
+
+- [Installation and operation guide (中文)](docs/POSTIZ-SETUP.md)
+- [Pinned Postiz deployment sources](deploy/postiz/UPSTREAM.md)
+- [Brand configuration example](config/postiz/brand.example.json)
+
+The worker needs Node.js 24+. It does not require Arcade, an Agent Server license,
+or Slack. Model and social platform credentials are configured at runtime.
+
 # Social Media Agent
 
 This repository contains an 'agent' which can take in a URL, and generate a Twitter & LinkedIn post based on the content of the URL. It uses a human-in-the-loop (HITL) flow to handle authentication with different social media platforms, and to allow the user to make changes, or accept/reject the generated post.

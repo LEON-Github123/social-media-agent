@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# The official Postiz application is a separate, pinned image in deploy/postiz.
+FROM node:24.21.0-bookworm-slim AS dependencies
+WORKDIR /app
+# This official Node tag ships Yarn 1.22.22. Fail instead of silently changing it.
+RUN test "$(yarn --version)" = "1.22.22"
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+FROM dependencies AS build
+COPY tsconfig.json tsconfig.postiz.json ./
+COPY src/postiz/ ./src/postiz/
+COPY src/agents/generate-post/nodes/prompt-core.ts ./src/agents/generate-post/nodes/prompt-core.ts
+RUN yarn postiz:build
+
+FROM node:24.21.0-bookworm-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+# No application install scripts, browser downloads, or user-supplied content.
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY --from=build /app/dist-postiz ./dist-postiz
+COPY package.json ./
+# Docker initializes a new named volume from this node-owned directory.
+RUN mkdir -p /app/content /data && touch /data/.initialized && chown -R node:node /data
+USER node
+ENTRYPOINT ["node", "dist-postiz/src/postiz/cli.js"]
+CMD ["work"]
