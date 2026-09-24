@@ -1,33 +1,56 @@
 # Postiz 内容 worker：验证记录与上线验收
 
-记录日期：2026-09-24。本记录对应本次 PR 的工作区验证；后续代码、依赖、镜像或配置变更后，应重新执行相关检查。
+记录日期：2026-09-24。本轮第三批代码的本地回归为 **195 / 195 通过**，已通过编译、编译后 CLI 入口、格式和 Bash 语法检查。第二批 GitHub CI 已全部通过；第三批固定 Postiz 全栈 CI 尚待本次提交执行。代码、依赖、镜像或配置变更后，应重新执行相关检查，不能把历史通过结果当作后续代码已经通过。
 
 ## 已完成的验证
 
-| 项目                    | 本次结果                             | 结果能说明什么                                                                                                           |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| 新 worker 的 Node 测试  | **73 / 73 通过，0 跳过**             | 已覆盖测试所定义的正常流程、失败路径与输入边界                                                                           |
-| 本地 HTTP 端到端测试    | 通过，包含在上述 73 项中             | 启动 CLI 子进程，访问本地模型和 Postiz mock HTTP 服务，完成入队、生成、草稿提交、同步与重复运行检查                      |
-| SQLite 状态与并发       | 通过，使用真实 SQLite 文件与两个连接 | 覆盖任务抢占、持久化、租约、品牌隔离、未知提交结果与恢复边界                                                             |
-| worker 类型检查         | 通过                                 | `tsconfig.postiz.json` 所覆盖代码的类型检查通过                                                                          |
-| worker 编译与编译后入口 | 通过                                 | 编译生成 `dist-postiz`，编译后的 CLI 能输出 `--help`                                                                     |
-| 原仓库 TypeScript 检查  | `tsc --noEmit` 通过                  | 原仓库当前 TypeScript 配置所覆盖内容没有报告类型错误                                                                     |
-| 全仓 lint 与图路径检查  | 通过                                 | 包含新增测试文件；保留原有检查规则。上游 8 条 unused-disable 警告不导致失败                                              |
-| 官方 Compose bootstrap  | 完整检出成功                         | 固定提交 `dd4969e5e694cd009619a0d53cff14c21104580b` 的完整目录可取得，包含官方 YAML、LICENSE 和两个 `dynamicconfig` 文件 |
+| 项目                    | 本次结果                                   | 结果能说明什么                                                                                                                     |
+| ----------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 新 worker 的 Node 测试  | **195 / 195 通过**                         | 已覆盖三批代码所定义的正常流程、失败路径、状态与统计边界                                                                           |
+| 本地 HTTP 端到端测试    | 通过，包含在上述 195 项中                  | CLI 子进程通过本地模型/Postiz mock HTTP 完成候选 → 选题 → 生成 → 草稿 → 同步；验证重启无重复请求、每日额度、人工反馈和远端正文变化 |
+| SQLite 状态与并发       | 通过，使用真实 SQLite 文件、多个连接和进程 | 覆盖版本迁移、旧数据保留、来源检查点/退避重启恢复、候选/选题持久化、五进程争抢每日最多三次额度、租约和未知提交隔离                 |
+| 运营报告与人工反馈      | 通过，包含在上述 195 项中                  | 分开本地状态与 Postiz 回执、生成尝试与模型调用；保留原始输出，按最近一次匹配回执观察正文修改，验证时区日界线和人工理由记录         |
+| worker 类型检查         | 通过                                       | `tsconfig.postiz.json` 所覆盖代码的类型检查通过                                                                                    |
+| worker 编译与编译后入口 | 通过                                       | 编译生成 `dist-postiz`，编译后的 CLI 能输出 `--help`                                                                               |
+| 原仓库 TypeScript 检查  | `tsc --noEmit` 通过                        | 原仓库当前 TypeScript 配置所覆盖内容没有报告类型错误                                                                               |
+| 全仓 lint 与图路径检查  | 通过                                       | 包含新增测试文件；保留原有检查规则。上游 8 条 unused-disable 警告不导致失败                                                        |
+| 官方 Compose bootstrap  | 完整检出成功                               | 固定提交 `dd4969e5e694cd009619a0d53cff14c21104580b` 的完整目录可取得，包含官方 YAML、LICENSE 和两个 `dynamicconfig` 文件           |
 
-测试覆盖的边界包括：来源 URL 与重定向检查、正文/文件大小、无效 UTF-8、无效模型输出、证据链接和 X 加权长度、错误账号、排期时间、重复来源、明确拒绝与未知提交结果。具体断言以 `src/postiz/tests/*.node-test.ts` 为准。
+测试覆盖的边界还包括：来源 URL 与重定向、正文/文件大小、无效 UTF-8、输入与品牌共用校验、无效模型输出、证据链接和 X 加权长度、错误账号、默认禁排期、旧新闻与未知日期、同一事件多来源合并、历史选题冲突的人工复核、来源错误隔离、明确拒绝与未知提交结果。具体断言以 `src/postiz/tests/*.node-test.ts` 为准。
 
 本地 HTTP 测试确实经过 HTTP 请求与 CLI 子进程，但服务响应由测试固定提供。SQLite 测试确实使用数据库文件，但不能据此推断所有生产负载与故障组合都已覆盖。
 
 ## GitHub CI
 
-首个提交的 [Postiz worker 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35971007691) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35971007612) 已通过。首次 lint 检查发现新测试未被 ESLint 的 TypeScript 项目覆盖，随后增加专用测试项目配置，并显式标记由 Node 测试运行器负责等待的注册调用；修复后全仓 lint 与 73 项 worker 测试在本地通过。
+第二批提交的 [Postiz worker 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736764)、[Lint 检查](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736753) 和 [原仓库 Unit Tests](https://github.com/LEON-Github123/social-media-agent/actions/runs/35986736737) 已全部通过。这些链接对应第二批代码；本轮第三批的 195 项本地通过和后续 GitHub 执行结果应分别记录。
 
 PR 的 `Postiz content worker` 工作流还增加了实际 Docker 构建和容器验证：检查编译入口，以非 root 用户在只读根文件系统、无网络的容器中入队，再创建新容器检查具名卷持久化和去重。它只使用公开示例数据，不需要业务密钥，也不调用发布服务。各次提交的实际执行结果见 [PR Checks](https://github.com/LEON-Github123/social-media-agent/pull/1/checks)，新增检查在完成前不能视为通过。
 
+### 本轮新增的固定全栈检查
+
+工作流已补 `main` 分支 push 触发，并将环境变量示例、部署文件及 `docs/POSTIZ-*.md` 纳入路径过滤。PR 和手动执行也保留。新增独立 `stack` job，运行 [test-stack.sh](../deploy/postiz/test-stack.sh)；**脚本和工作流已编写，不等于这一提交已经在 GitHub 执行通过。**
+
+该检查的范围是：
+
+- 完整 bootstrap 固定官方 Compose commit，验证合并配置、Postiz 镜像 digest、Temporal 配置挂载、私有依赖端口和 worker 权限。
+- 使用随机且相互独立的测试 secret、独立项目/卷/镜像标签和空来源配置，启动 Postiz、两套 PostgreSQL、Redis、Temporal、Elasticsearch 和空队列 worker。
+- 最多等待 10 分钟服务健康，再有限等待真实前端/API 和 Temporal `default` namespace。检查固定版本中的 frontend、backend、orchestrator 进程在线。
+- 检查真实前端可访问、未经认证的 Public API 请求被拒绝、worker 能经内部 Docker 地址访问该 API，并以非 root 用户读取 SQLite。
+- 不使用模型、Postiz 或 X 业务密钥，不创建社交账号连接，不调用模型或公开发布。可选 Temporal UI、管理工具和 Spotlight 不属于本次运行所需服务。
+- 失败时仅上传脱敏后的状态、服务和启动诊断，保留 7 天；不上传 `.env`、合并后的完整配置、完整容器 inspect、PM2 环境 JSON 或数据库。退出时清理本测试随机项目的卷和临时 worker 镜像。
+
+| 本轮检查                               | 实际 run URL / 提交  | 结果                          |
+| -------------------------------------- | -------------------- | ----------------------------- |
+| 第二批 worker、Lint、原仓库 Unit Tests | 上述三个第二批 run   | 已通过                        |
+| 第三批本地 Node 回归、编译与 CLI 入口  | 当前待提交代码       | 195 / 195；编译和入口检查通过 |
+| 第三批 GitHub worker 与容器验证        | 待本轮提交运行后填写 | 待执行 / 核对                 |
+| 固定官方 Postiz + Temporal 全栈启动    | 待本轮提交运行后填写 | 待执行 / 核对                 |
+| 独立 Linux HTTPS 与真实密钥联调        | 见试运行记录         | 未执行                        |
+| 连续 7 天草稿试运行                    | 见试运行记录         | 未执行                        |
+
 ## 尚未完成的验证
 
-- 本地执行环境 **Docker Engine 不可用**；worker 镜像由上面的 GitHub CI 验证。真实的 Postiz / Temporal 服务栈尚未启动验收，worker 容器检查不能替代整套服务联调。
+- 本地执行环境 **Docker Engine 不可用**；worker 镜像由上面的 GitHub CI 验证。本轮增加了 Postiz / Temporal 全栈 CI 脚本，其真实执行结果需补入上表。worker 容器检查不能替代整套服务联调。
 - 没有使用真实模型、Postiz 或 X 密钥执行本次测试，也没有向 X 发帖。
 - 模型内容质量仍需使用真实品牌资料和真实来源试跑。Schema、长度和复审流程通过，不等于所有事实和文案质量自动得到保证。
 - 原仓库 Unit Tests 已由 GitHub 执行；需要真实服务的旧工作流集成测试、生产端到端测试仍未执行。
@@ -59,6 +82,12 @@ yarn lint:all
 node --import tsx --test src/postiz/tests/cli.node-test.ts
 ```
 
+独立重跑真实 SQLite、来源恢复及运营统计相关测试：
+
+```bash
+node --import tsx --test src/postiz/tests/store.node-test.ts src/postiz/tests/operations-store.node-test.ts src/postiz/tests/collector.node-test.ts src/postiz/tests/reports.node-test.ts
+```
+
 验证官方部署输入需要访问 GitHub，但不需要 Docker 或业务密钥：
 
 ```bash
@@ -72,6 +101,16 @@ test -f deploy/postiz/upstream/LICENSE
 ```
 
 预期 HEAD 为 `dd4969e5e694cd009619a0d53cff14c21104580b`。bootstrap 对已存在的正确检出执行验证，不会覆盖被修改的上游文件。版本出处与镜像固定信息见 [UPSTREAM.md](../deploy/postiz/UPSTREAM.md)。
+
+在有 Docker Engine、Compose 2.24.4+、Git 和 Python 3 的 Linux CI runner 或开发环境重跑全栈检查：
+
+```bash
+bash deploy/postiz/test-stack.sh
+```
+
+这个命令会拉取官方镜像、构建 worker、启动隔离临时服务并在结束时删除其临时数据卷。它不读取本地 `.env.postiz` 或业务资料；基础服务密码由脚本生成，worker 使用空来源、禁排期和禁自动提交配置。失败时输出脱敏诊断目录。GitHub runner 会在运行前设置 Elasticsearch 所需的 `vm.max_map_count=262144`。
+
+全栈通过只证明这次固定版本在该 runner 上完成了所列启动和连通性检查。API 返回 401/403 是未认证请求的预期结果，不能据此声称真实 API key、X 授权、模型内容或发布已验证。
 
 ## 部署后最小验收
 
@@ -99,17 +138,20 @@ bash deploy/postiz/compose.sh run --rm content-worker preview --input-json /app/
 
 检查品牌匹配、来源归因、时效、语言和具体事实。缺少自有测试证据时，文案不能声称“我们测试过”。不通过时先调整资料或规则，不扩大自动处理数量。
 
+`preview` 也会消耗每日生成额度，并写入 SQLite。若当天额度已耗尽，应等待配置时区的下一天或使用已有结果检查，不能通过删除数据库规避额度。
+
 ### 3. 验证持久化、草稿提交与同步
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker enqueue --input-json /app/content/input.json
+bash deploy/postiz/compose.sh run --rm content-worker candidates
 bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
 bash deploy/postiz/compose.sh run --rm content-worker show --id JOB_ID
 bash deploy/postiz/compose.sh run --rm content-worker submit --id JOB_ID
 bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID
 ```
 
-将 `JOB_ID` 替换为入队返回值。检查本地任务先到 `ready`，提交后在正确 Postiz 账号下出现一份草稿，保存了 Postiz ID。此时未公开发布就应保留空的平台帖子 ID。
+`enqueue` 返回候选信息，不是内容任务。将 `JOB_ID` 替换为 `work` 选择候选并生成后返回的任务 ID；候选被拒绝、待复核或额度耗尽时，先处理对应状态。检查本地任务先到 `ready`，提交后在正确 Postiz 账号下出现一份草稿，保存了 Postiz ID。此时未公开发布就应保留空的平台帖子 ID。
 
 再次用相同输入入队并处理，检查任务 ID 与 Postiz 草稿没有重复。重新创建 worker 容器后再运行 `show`，确认具名卷中的任务记录仍可读取。这个小规模复核用于验证实际部署的持久化与去重，不是对所有异常情况作保证。
 
@@ -117,6 +159,10 @@ bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID
 
 仅在账号、最终文案和未来时间已明确选定后，在 Postiz 页面给上述草稿排期。到时检查 X 上的实际帖子，再同步任务，核对最终平台 ID / URL。
 
-如果需要从 CLI 测试排期，使用一条新的、明确选定的来源，并在 `enqueue` 时传 `--schedule`；不要把已经存在的草稿重新入队。遇到提交结果未知，先在 Postiz 核对，不能直接重复创建。
+正常运行保持 `CONTENT_ALLOW_SCHEDULING=false`，排期和媒体编辑在 Postiz 页面操作；不要把已经存在的草稿重新入队。遇到提交结果未知，先在 Postiz 核对，不能直接重复创建。
 
 完成后记录实际服务版本、任务 ID、Postiz ID、平台 ID、执行时间及异常。只有这些真实验收完成的部分，才应更新为已验证。
+
+独立 Linux、HTTPS、真实密钥联调的执行前条件和 7 天逐日记录模板见 [上线与试运行方案](POSTIZ-PILOT.md)。当前这些项目均不能标记为已完成。
+
+日常先用 `status` 查看本地汇总、`history --id JOB_ID` 查看审计记录；人工改稿或拒稿后，使用 `feedback --id JOB_ID --kind edit|reject|note --reason TEXT` 保存理由。三种 kind 需选择一种；反馈不会自动编辑或取消 Postiz 中的内容。完整命令及真实素材待验收矩阵见试运行方案。

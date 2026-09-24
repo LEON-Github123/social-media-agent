@@ -110,6 +110,15 @@ function jobInput(job: ContentJob): JobInput {
   return input;
 }
 
+// Reconciliation reads an existing receipt. New brand/source rules must not
+// prevent old accepted or unknown jobs from being reconciled.
+function storedIntegrationId(job: ContentJob): string {
+  const id = (job.input as { integrationId?: unknown } | null)?.integrationId;
+  if (typeof id !== "string" || !id.trim() || id.length > 200)
+    throw new Error("The historical job has no valid integration identity");
+  return id;
+}
+
 function jobOutput(job: ContentJob): ContentResult {
   const output = job.output as ContentResult;
   if (
@@ -159,7 +168,7 @@ export async function generateNext(options: {
   jobId?: string;
   allowScheduling?: boolean;
   quota?: { limit: number; timeZone: string };
-  generate: (input: JobInput) => Promise<ContentResult>;
+  generate: (input: JobInput, job: ContentJob) => Promise<ContentResult>;
 }): Promise<ContentJob | null> {
   const { store, leaseMs } = options;
   const claimed = store.claimGeneration({
@@ -173,7 +182,7 @@ export async function generateNext(options: {
   try {
     assertSchedulingAllowed(claimed.mode, options.allowScheduling);
     const result = await withHeartbeat(store, claimed, leaseMs, () =>
-      options.generate(jobInput(claimed)),
+      options.generate(jobInput(claimed), claimed),
     );
     return store.completeGeneration(
       claimed.id,
@@ -285,7 +294,7 @@ function queryWindow(jobs: ContentJob[]): {
   return {
     startDate: new Date(Math.min(...times) - 86_400_000).toISOString(),
     endDate: new Date(
-      Math.max(Date.now(), ...times) + 86_400_000,
+      Math.max(Date.now(), ...times) + 365 * 86_400_000,
     ).toISOString(),
   };
 }
@@ -300,6 +309,24 @@ function platformReceipt(post: PostizPost) {
     platformUrl: post.releaseURL || undefined,
     postizState: post.state,
   };
+}
+
+function observePostiz(
+  store: ContentJobStore,
+  job: ContentJob,
+  post: PostizPost,
+): void {
+  store.observePostiz({
+    brandId: job.brandId,
+    jobId: job.id,
+    postizId: post.id,
+    postizState: post.state,
+    content: post.content,
+    scheduledAt: post.publishDate,
+    platformPostId:
+      post.releaseId && /^\d+$/.test(post.releaseId) ? post.releaseId : null,
+    platformUrl: post.releaseURL || null,
+  });
 }
 
 export async function syncJob(
@@ -322,7 +349,7 @@ export async function syncJob(
     throw new Error(
       "Postiz record was not found in the job date range; absence does not prove the submission failed",
     );
-  if (post.integrationId !== jobInput(job).integrationId)
+  if (post.integrationId !== storedIntegrationId(job))
     throw new Error("Postiz record belongs to a different integration");
   if (bindPostizId) {
     const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -330,9 +357,13 @@ export async function syncJob(
       throw new Error(
         "Postiz record content differs; verify the record manually before binding",
       );
-    return store.bindUnknown(job.id, platformReceipt(post));
+    const bound = store.bindUnknown(job.id, platformReceipt(post));
+    observePostiz(store, bound, post);
+    return bound;
   }
-  return store.recordPlatformResult(job.id, platformReceipt(post));
+  const updated = store.recordPlatformResult(job.id, platformReceipt(post));
+  observePostiz(store, updated, post);
+  return updated;
 }
 
 export async function syncSubmitted(
@@ -353,10 +384,11 @@ export async function syncSubmitted(
     const post = posts.find(
       (item) =>
         item.id === job.postizId &&
-        item.integrationId === jobInput(job).integrationId,
+        item.integrationId === storedIntegrationId(job),
     );
     if (post) {
       store.recordPlatformResult(job.id, platformReceipt(post));
+      observePostiz(store, job, post);
       updated++;
     } else {
       store.markSyncChecked(job.id);

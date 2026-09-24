@@ -162,6 +162,45 @@ const migrations: readonly Migration[] = [
       CREATE INDEX selection_model_calls_daily ON selection_model_calls (brand_id, started_at);
     `,
   },
+  {
+    version: 4,
+    name: "feedback_and_observations",
+    sql: `
+      CREATE TABLE content_feedback (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('edit','reject','note')),
+        reason TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX content_feedback_brand ON content_feedback (brand_id, created_at);
+      CREATE TABLE postiz_observations (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        postiz_id TEXT NOT NULL,
+        postiz_state TEXT,
+        content TEXT NOT NULL,
+        scheduled_at TEXT,
+        platform_post_id TEXT,
+        platform_url TEXT,
+        snapshot_hash TEXT NOT NULL,
+        observed_at INTEGER NOT NULL
+      );
+      CREATE INDEX postiz_observations_job ON postiz_observations (job_id, observed_at);
+      CREATE INDEX postiz_observations_brand ON postiz_observations (brand_id, observed_at);
+      CREATE TABLE writing_model_calls (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        job_id TEXT,
+        task TEXT NOT NULL CHECK (task IN ('relevance','report','post','quality')),
+        started_at INTEGER NOT NULL
+      );
+      CREATE INDEX writing_model_calls_brand ON writing_model_calls (brand_id, started_at);
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

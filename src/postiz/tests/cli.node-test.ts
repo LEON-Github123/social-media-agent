@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
 import { readConfig, safeError } from "../config.js";
 
 const execute = promisify(execFile);
@@ -41,6 +42,7 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
   let modelCalls = 0;
   let postCalls = 0;
   let receivedContent = "";
+  const postizDate = new Date().toISOString();
   const postText =
     "Release notes explain this developer tool. https://example.com/release";
   const modelResponses = [
@@ -61,6 +63,23 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
       if (request.url === "/v1/chat/completions") {
         assert.equal(request.headers.authorization, "Bearer fake-model-key");
         const stage = modelCalls++;
+        const ledger = new DatabaseSync(join(directory, "jobs.sqlite"), {
+          readOnly: true,
+        });
+        try {
+          const recorded = ledger
+            .prepare(
+              "SELECT (SELECT COUNT(*) FROM writing_model_calls) + (SELECT COUNT(*) FROM selection_model_calls) AS n",
+            )
+            .get();
+          assert.equal(
+            Number(recorded!.n),
+            modelCalls,
+            "Every model request must be recorded before the HTTP request starts",
+          );
+        } finally {
+          ledger.close();
+        }
         const payload = JSON.parse(body);
         const supplied =
           stage === 0
@@ -142,7 +161,7 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
                     id: "draft-1",
                     content: receivedContent,
                     state: "DRAFT",
-                    publishDate: new Date().toISOString(),
+                    publishDate: postizDate,
                     releaseId: null,
                     releaseURL: null,
                     integration: { id: "x-test", providerIdentifier: "x" },
@@ -289,6 +308,38 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
     "One generation and two rejected previews exhaust the persistent daily quota",
   );
   assert.equal(postCalls, 1);
+  receivedContent =
+    "A practical developer note, edited in Postiz. https://example.com/release";
+  await run(["sync", "--id", jobs[0].id]);
+  await run([
+    "feedback",
+    "--id",
+    jobs[0].id,
+    "--kind",
+    "edit",
+    "--reason",
+    "Made the benefit specific",
+  ]);
+  const status = JSON.parse((await run(["status"])).stdout);
+  assert.equal(status.quota.used, 3);
+  assert.equal(status.today.todayGenerationStarts, 3);
+  assert.equal(status.generationAttempts.total, 3);
+  assert.equal(status.modelCalls.total, 7);
+  assert.equal(status.modelCalls.writing.total, 6);
+  assert.equal(status.modelCalls.selection.total, 1);
+  assert.equal(status.jobs.items[0].originalPost, postText);
+  assert.equal(status.jobs.items[0].latestObservedContent, receivedContent);
+  assert.equal(status.jobs.items[0].edited, true);
+  assert.equal(
+    status.jobs.items[0].feedback[0].reason,
+    "Made the benefit specific",
+  );
+  assert.equal(status.candidates.failureItems.length, 0);
+  assert.equal(
+    modelCalls,
+    7,
+    "Status and feedback perform no external model calls",
+  );
   await execute(
     process.execPath,
     ["--import", "tsx", resolve("src/postiz/cli.ts"), "work", "--once"],

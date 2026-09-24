@@ -65,6 +65,7 @@ function api(
     create?: () => Response | Promise<Response>;
     posts?: () => unknown[];
     identifier?: string;
+    onList?: (url: URL) => void;
   } = {},
 ) {
   let creates = 0;
@@ -90,8 +91,10 @@ function api(
           ? behavior.create()
           : Response.json([{ postId: "postiz-1", integration: "x-account" }]);
       }
-      if (path.endsWith("/posts"))
+      if (path.endsWith("/posts")) {
+        behavior.onList?.(new URL(String(url)));
         return Response.json({ posts: behavior.posts?.() ?? [] });
+      }
       throw new Error("Unexpected request");
     },
   });
@@ -500,4 +503,117 @@ void test("historical approved output is rechecked for current source attributio
   assert.equal(result?.state, "failed");
   assert.match(result!.lastError!, /must link to a supplied source/);
   assert.equal(calls, 0);
+});
+
+void test("sync keeps generated text and every observed edit while tracking a future human schedule and platform receipt", async (t) => {
+  const { store, job } = setup(t);
+  await ready(store);
+  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  let content = output.post;
+  let state = "DRAFT";
+  const remote = api({
+    onList: (url) =>
+      assert.ok(
+        Date.parse(url.searchParams.get("endDate")!) >= Date.parse(future),
+      ),
+    posts: () => [
+      {
+        id: "postiz-1",
+        content,
+        state,
+        publishDate: future,
+        releaseId: state === "PUBLISHED" ? "123456789" : null,
+        releaseURL:
+          state === "PUBLISHED"
+            ? "https://x.com/tokenhot/status/123456789"
+            : null,
+        integration: { id: "x-account", providerIdentifier: "x" },
+      },
+    ],
+  });
+  await submitNext({
+    store,
+    client: remote.client,
+    brandId: brand.id,
+    leaseMs: 30000,
+  });
+  const sync = () => syncJob(store, remote.client, store.get(job.id)!);
+  await sync();
+  await sync();
+  assert.equal(
+    store.listObservations({ brandId: brand.id, jobId: job.id }).length,
+    1,
+  );
+  content = "One practical developer tip. https://example.com/release";
+  state = "QUEUE";
+  await sync();
+  state = "PUBLISHED";
+  const published = await sync();
+  const observations = store.listObservations({
+    brandId: brand.id,
+    jobId: job.id,
+  });
+  assert.deepEqual(
+    observations.map((item) => item.content),
+    [output.post, content, content],
+  );
+  assert.deepEqual(
+    observations.map((item) => item.postizState),
+    ["DRAFT", "QUEUE", "PUBLISHED"],
+  );
+  assert.equal((published.output as ContentResult).post, output.post);
+  assert.equal(published.platformPostId, "123456789");
+  assert.equal(remote.creates(), 1);
+});
+
+void test("new brand limits do not prevent reconciliation of a historical unknown receipt", async (t) => {
+  const { store } = setup(t);
+  const old = store.enqueue({
+    id: "legacy-unknown",
+    brandId: brand.id,
+    contentFingerprint: "legacy-unknown",
+    mode: "draft",
+    input: {
+      ...input,
+      brand: { ...brand, businessContext: "Historical context ".repeat(2000) },
+    },
+  });
+  const generation = store.claimGeneration({
+    workerId: "old-version",
+    leaseMs: 30000,
+    jobId: old.id,
+  })!;
+  store.completeGeneration(old.id, generation.leaseToken, output, "ready");
+  const submission = store.claimSubmit({
+    workerId: "old-version",
+    leaseMs: 30000,
+    jobId: old.id,
+  })!;
+  store.markUnknown(
+    old.id,
+    submission.leaseToken,
+    "Response lost before the upgrade",
+  );
+  const remote = api({
+    posts: () => [
+      {
+        id: "known-existing",
+        content: output.post,
+        state: "DRAFT",
+        publishDate: new Date().toISOString(),
+        releaseId: null,
+        releaseURL: null,
+        integration: { id: "x-account", providerIdentifier: "x" },
+      },
+    ],
+  });
+  const bound = await syncJob(
+    store,
+    remote.client,
+    store.get(old.id)!,
+    "known-existing",
+  );
+  assert.equal(bound.postizId, "known-existing");
+  assert.equal(bound.state, "submitted");
+  assert.equal(remote.creates(), 0);
 });

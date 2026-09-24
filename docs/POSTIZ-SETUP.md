@@ -142,17 +142,22 @@ Postiz API key 允许 worker 操作其组织数据，应按实际账号范围妥
 ## 5. 首次处理：先生成并提交草稿
 
 将本地 `input.json` 示例替换为真实来源正文与 URL。若只想验证模型输出、尚未配置
-Postiz key / integration，可先执行 `preview`：它不会入队或调用 Postiz。
+Postiz key / integration，可先执行 `preview`：它不提交到 Postiz，但会使用真实模型、
+消耗当天生成额度，并在 SQLite 中持久化相关记录；它不是不落盘的免费预览。
 Docker 方式仍需要上面的基础服务配置；完全不运行 Postiz 时使用第 7 节原生 CLI。
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker preview --input-json /app/content/input.json
 ```
 
-设置好 `POSTIZ_INTEGRATION_ID` 后再入队，先只生成并保存本地结果：
+`enqueue` 先持久化候选，不立即创建内容任务或调用模型/Postiz，但入队前必须填写
+`POSTIZ_INTEGRATION_ID`。这个目标账号标识不是 API 密钥；真实账号归属按前面的
+`integrations` 步骤核对。候选 ID 与后续内容任务 ID 是不同对象。让 worker 选择候选，
+先只生成并保存本地结果：
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker enqueue --input-json /app/content/input.json
+bash deploy/postiz/compose.sh run --rm content-worker candidates
 bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
 ```
 
@@ -167,7 +172,8 @@ bash deploy/postiz/compose.sh run --rm content-worker enqueue --url "https://exa
 内容目录保存来源正文，并通过 `--url` 与 `--text-file /app/content/source.txt`
 一起提交。来源仍作为外部资料处理，不能给 worker 下指令。
 
-运行返回本地任务 ID 后，可检查结果或同步 Postiz 状态：
+`work` 成功选择候选并生成任务后，使用它输出的本地任务 ID 检查结果。
+候选被拒绝、等待选题复核或当天额度用尽时，不应假定已经有内容任务：
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker show --id JOB_ID
@@ -185,6 +191,36 @@ bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID
 送入 **Postiz 草稿**。看到 draft / submitted 不能理解为 X 已公开发布。
 在 Postiz 打开草稿检查来源、事实、语言和目标账号，再用其编辑日历排期。
 
+### 候选与选题复核
+
+手动导入和订阅发现都先进入持久化候选，再经过选题选择、合并和每日额度控制。
+`candidates` 查看候选，`topics` 查看选题；这些 ID 与 `show --id` 接收的内容任务 ID
+不同。等待复核的候选或选题不会因重复执行 `work` 就自动变成已批准内容。
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker candidates
+bash deploy/postiz/compose.sh run --rm content-worker topics
+bash deploy/postiz/compose.sh run --rm content-worker retry-candidate --id CANDIDATE_ID --reason "已核对并补全原始来源，请重新评估"
+bash deploy/postiz/compose.sh run --rm content-worker review-topic --id TOPIC_ID --decision approve --reason "已核对原文与事件日期，证据支持该选题"
+```
+
+替换真实 ID，并填写实际核对理由。`review-topic` 的 decision 可以是 `approve` 或
+`reject`；批准选题后仍需等待正常生成流程和当日额度，不会立即公开发布。
+仅当确认属于与历史记录不同的新事件时，才对 `retry-candidate` 添加
+`--confirm-new-event`，并在 reason 中写明依据。它不是规避重复检测、额度或失败
+核查的通用开关。内容任务的 `retry --id JOB_ID` 用于另一个阶段，不应用候选 ID 调用。
+
+发现历史选题冲突时，直接 `approve` 会被拒绝。确认是同一事件后，可以明确合并：
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker review-topic --id REVIEW_TOPIC_ID --decision approve --merge-with EXISTING_TOPIC_ID --reason "核对官方公告、产品与版本后确认是重复报道"
+```
+
+合并只补充选题的来源关联和审计记录，不修改原任务的输入、生成稿、回执，也不创建
+第二份草稿。目标处于 `unknown` 或 `submitting` 时必须先对账。旧版本任务已有回执
+或提交结果未知时，`--confirm-new-event` 同样不能解除冲突。明确不同版本、不同日期
+的调价等事件保留独立选题；仅模型名称拼写差异不能作为新事件依据。
+
 确认正常后启动长期 worker：
 
 ```bash
@@ -192,11 +228,16 @@ bash deploy/postiz/compose.sh --profile worker up -d content-worker
 bash deploy/postiz/compose.sh logs --tail 100 content-worker
 ```
 
-worker 每轮分别最多生成、提交 `CONTENT_MAX_JOBS_PER_TICK` 个任务，以
-`CONTENT_POLL_INTERVAL_MS`（默认 60 秒）作为本地队列循环间隔。外部来源发现使用
+worker 以 `CONTENT_POLL_INTERVAL_MS`（默认 60 秒）作为本地队列循环间隔，
+`CONTENT_MAX_JOBS_PER_TICK` 控制单轮处理上限。生成另受持久化每日额度约束：
+`CONTENT_DAILY_GENERATION_LIMIT` 默认 3，只允许 1–3；`preview` 也消耗该额度。
+`CONTENT_DAILY_TIMEZONE` 默认 `Asia/Shanghai`，按该时区划分日期。
+重启容器不应被当成重置额度的方法。外部来源发现使用
 独立的 `CONTENT_DISCOVERY_INTERVAL_MS`（默认 24 小时），不会每轮重新付费采集。
-该发现时钟目前保存在进程内，重启 worker 或另开 `work --once` 会重新检查一次
-来源；持久化去重避免重复生成/提交，但不能避免这次外部读取费用。来源订阅使用可选的
+`CONTENT_SELECTION_BATCH_SIZE` 默认 20，控制单次候选选择批量；
+`CONTENT_MAX_SOURCES_PER_TICK` 默认 5，控制每轮来源处理上限。
+来源重试、手动 `discover` 和模型调用仍可能产生费用；每日生成额度不是所有外部
+服务的统一费用上限。来源订阅使用可选的
 `CONTENT_SOURCES_FILE`；Docker 中的值必须是 `/app/content/` 下的容器路径，例如
 `/app/content/sources.json`，文件是 JSON 数组。默认 `sources.example.json` 是空数组，
 不会触发付费采集。不配置订阅文件时，worker 处理手动入队的任务。
@@ -218,23 +259,15 @@ bash deploy/postiz/compose.sh --profile worker up -d content-worker
 
 修改 Postiz 域名或 X 应用密钥时，对 `postiz` 执行同样的 `up -d postiz`。
 
-## 6. 明确排期与不确定结果
+## 6. 在 Postiz 排期与核对不确定结果
 
-本 CLI 不提供 `now` 即时发布模式。若要在 CLI 创建新的排期任务，必须在
-**enqueue 时**显式传入未来 UTC 时间；之后的 `submit` 沿用入队时的模式：
+本 CLI 的候选处理流程只创建草稿，不提供 `now` 即时发布，也不通过新的
+`enqueue --schedule` / `--media` 绕过候选与选题管理。请在 Postiz 页面编辑媒体、
+确认账号和最终内容，再明确安排发布时间。正常运行保持
+`CONTENT_ALLOW_SCHEDULING=false`；不要把打开该开关理解为自动具备了排期策略。
 
-```text
-bash deploy/postiz/compose.sh run --rm content-worker enqueue --input-json /app/content/input.json --schedule "YYYY-MM-DDTHH:mm:ssZ"
-bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
-bash deploy/postiz/compose.sh run --rm content-worker show --id JOB_ID
-bash deploy/postiz/compose.sh run --rm content-worker submit --id JOB_ID
-```
-
-替换 ID 和时间。只有使用带 `--schedule` 的新任务才会进入真实排期；默认自动
-提交也会按该任务已明确的 schedule 执行。已经存在 Postiz 草稿的任务请在 Postiz
-页面编辑排期，`submit` 不接受 `--schedule`，也不要重新入队规避去重。
-Postiz 接收排期后，由它负责后续
-平台重试；本 worker 不同时维护另一套 X 发帖定时器。
+Postiz 接收排期后，由它负责后续平台重试；本 worker 不同时维护另一套 X 发帖
+定时器。已有草稿请在 Postiz 页面编辑，不要重新入队规避去重。
 
 如果提交超时或结果未知，先在 Postiz 核对，不能直接重试创建。找到确定属于本
 任务的 Postiz 帖子后，可以提供其 ID 对账：
@@ -245,6 +278,43 @@ bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID --postiz-
 
 普通可重试的内容处理失败可以使用 `retry --id JOB_ID`；它不能取代未知外部写入
 的核对。`sync` 中确认的 Postiz ID 与最终 X 帖子 ID 是两个不同字段。
+
+需要修复尚未提交的失败任务时，可以显式刷新品牌快照并转为草稿：
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker retry --id JOB_ID --refresh-brand --to-draft --reason "已修正品牌规则，重新生成后在 Postiz 审核"
+bash deploy/postiz/compose.sh run --rm content-worker history --id JOB_ID
+```
+
+修复保留身份与去重键，保存修改前后记录，清除旧生成结果并重新消耗当日写作额度。
+已提交、正在提交、结果未知以及已有平台回执的任务不能通过该入口重新创建。
+关闭排期开关时，历史排期任务也会被拦截，需要显式转为草稿。
+
+### 运行汇总与人工反馈
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker status
+bash deploy/postiz/compose.sh run --rm content-worker feedback --id JOB_ID --kind edit --reason "删除泛泛而谈的开场，保留一个具体 API 用法" --actor operator
+bash deploy/postiz/compose.sh run --rm content-worker feedback --id JOB_ID --kind reject --reason "来源不足以支持性能结论"
+bash deploy/postiz/compose.sh run --rm content-worker history
+```
+
+`status` 不调用模型或 Postiz，也不更改内容任务。它读取当前数据库，提供上海日期下的
+候选数、写作启动数、额度余额、生成请求和筛选请求次数、草稿与发布状态、失败原因、
+来源检查点及人工反馈。`history` 不带 ID 时查看品牌的最近审计记录。
+
+写作启动包含 `preview`、失败和显式重试；模型请求开始次数另外记录，不等于成功响应数、
+token 数或费用。`firstObservedDrafts` 表示今天首次观察到的草稿，可能包括今天才同步的
+旧草稿，不能当作今天新建数量。查询达到保护性上限时，汇总会明确标记数据不完整。
+
+同步保留原始生成稿和观察到的 Postiz 正文快照；连续相同快照不重复保存，修改后改回
+原文仍保留中间版本。`edited` 只代表观察稿与生成稿不同，不能推断具体是谁修改。
+worker 不将生成稿写回覆盖 Postiz 编辑。自动对账包含未来 365 天的排期；未找到远端
+记录不代表发布失败，也不会触发重新创建。
+
+反馈类型为 `edit`、`reject` 或 `note`，只形成供人工复盘的原因记录和汇总，不自动修改
+品牌规则，不代替 Postiz 中的删除、修改或排期。经操作者确认后再编辑品牌 JSON。
+互动数据继续在官方 Postiz 分析页面查看，worker 不假定当前 X 权限提供了哪些指标。
 
 ## 7. 不使用 Docker 运行内容 worker
 
@@ -318,10 +388,13 @@ Postiz 管理对应排期。普通 `compose down` 保留具名卷；不要把删
 
 ## 实现范围
 
-本 PR 提供网页/RSS/Atom/GetXAPI/JSON 来源、品牌相关性判断、研究报告、单帖写作、质量复审和 Postiz 草稿/排期对接。生成工作流复用上游抽出的报告与写作 Prompt，并使用开源 LangGraph 库运行。尚未移植上游的跨选题语义聚类、视频理解、AI 生图、线程规划和效果驱动的策略学习。单条任务可手工提供多个来源作为证据。
+本 PR 提供网页/RSS/Atom/GetXAPI/JSON 来源、候选与选题管理、品牌相关性判断、研究报告、单帖写作、质量复审和 Postiz 草稿对接。生成工作流复用上游抽出的报告与写作 Prompt，并使用开源 LangGraph 库运行。尚未移植上游的视频理解、AI 生图、线程规划和效果驱动的策略学习。
 
-来源去重按品牌、目标账号、来源 URL（X 帖子按 status ID）进行，不等于跨不同 URL 的事件语义去重。更改品牌规则不会自动重新生成已有来源；使用 `show --id` 查看当时保存的品牌快照。抓取或模型失败后可显式 `retry`；进程崩溃发生在生成期间，租约过期后从该任务重新生成，可能再次消耗模型调用，已提交的 Postiz 任务不会因此重发。
+来源 URL（X 帖子按 status ID）去重与选题去重是不同层次。相似内容不能总被确定为同一事件，保守阻断和人工复核仍有必要。更改品牌规则不会自动重新生成已有来源；使用 `show --id` 查看生成时保存的品牌快照。抓取或模型失败后可按任务状态显式 `retry`；进程崩溃恢复仍可能再次消耗模型调用，不能据此保证外部 API 零费用或零错误。
 
-默认每条通过的内容最多调用模型四次。外部来源是证据材料，模型质量复审也不是独立事实证明；建议先检查草稿效果再扩大自动排期。
+单条内容生成可能多次调用模型。外部来源是证据材料，模型质量复审也不是独立事实证明；先检查草稿效果，再决定是否在 Postiz 排期。
 
 本次已完成的测试、明确未验证的范围、复现命令及部署后最小验收见 [验证记录](POSTIZ-VALIDATION.md)。
+
+独立 Linux 主机、HTTPS、真实服务联调及 7 天草稿试运行的操作步骤和待填写记录见
+[上线与试运行方案](POSTIZ-PILOT.md)。这份方案不代表已部署、已使用真实密钥或已完成 7 天运行。

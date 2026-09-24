@@ -2,12 +2,17 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateContentDatabase } from "./migrations.js";
 import { validateJobInput } from "./validation.js";
-import {
-  ContentOperationsStore,
-  type GenerationQuotaOptions,
-} from "./operations-store.js";
+import type { GenerationQuotaOptions } from "./operations-store.js";
+import { ContentFeedbackStore } from "./feedback-store.js";
 import { JobConflictError, LeaseLostError } from "./store-errors.js";
 export { JobConflictError, LeaseLostError } from "./store-errors.js";
+export type {
+  ContentFeedback,
+  PostizObservation,
+  PostizObservationInput,
+  WritingModelCall,
+  HistoryFilter,
+} from "./feedback-store.js";
 export type {
   ContentCandidate,
   ContentTopic,
@@ -141,7 +146,7 @@ function nullableText(value: unknown): string | null {
  * A submission lease is committed before POST /posts. If its outcome is lost,
  * recovery quarantines the job instead of repeating that non-idempotent POST.
  */
-export class ContentJobStore extends ContentOperationsStore {
+export class ContentJobStore extends ContentFeedbackStore {
   readonly migrationBackupPath: string | null;
 
   constructor(path: string, options: { now?: () => number } = {}) {

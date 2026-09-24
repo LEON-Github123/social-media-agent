@@ -12,6 +12,7 @@ import { generateContent } from "./content.js";
 import { validateJobInput, validateSourceInputs } from "./validation.js";
 import { collectSources } from "./collector.js";
 import { selectAndQueue } from "./pipeline.js";
+import { buildOperationsReport, type ReportCollection } from "./reports.js";
 import {
   ContentJobStore,
   type ContentJob,
@@ -41,7 +42,9 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli work [--once] [--no-submit]
   yarn postiz:cli show [--id CONTENT_ID]
   yarn postiz:cli retry --id CONTENT_ID [--refresh-brand] [--to-draft] [--reason TEXT]
-  yarn postiz:cli history --id CONTENT_ID
+  yarn postiz:cli history [--id CONTENT_ID]
+  yarn postiz:cli status
+  yarn postiz:cli feedback --id CONTENT_ID --kind edit|reject|note --reason TEXT [--actor NAME]
   yarn postiz:cli submit --id CONTENT_ID
   yarn postiz:cli sync --id CONTENT_ID [--postiz-id EXISTING_ID]
   yarn postiz:cli integrations
@@ -100,6 +103,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       decision: { type: "string" },
       "confirm-new-event": { type: "boolean" },
       "merge-with": { type: "string" },
+      kind: { type: "string" },
+      actor: { type: "string" },
     },
   });
   const command = positionals[0];
@@ -122,6 +127,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     "topics",
     "retry-candidate",
     "review-topic",
+    "status",
+    "feedback",
   ]);
   if (!commands.has(command) || positionals.length !== 1)
     throw new Error("Unknown command; use --help");
@@ -140,6 +147,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     topics: ["id"],
     "retry-candidate": ["id", "reason", "confirm-new-event"],
     "review-topic": ["id", "reason", "decision", "merge-with"],
+    status: [],
+    feedback: ["id", "kind", "reason", "actor"],
   };
   for (const [flag, value] of Object.entries(values)) {
     if (
@@ -221,6 +230,18 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   };
   if (store.migrationBackupPath)
     console.error(`Pre-upgrade database backup: ${store.migrationBackupPath}`);
+  const writingModel = (jobId?: string): ContentModel => ({
+    invoke(request) {
+      if (!["relevance", "report", "post", "quality"].includes(request.task))
+        throw new Error("Unexpected task in the writing pipeline");
+      store.recordWritingModelCall({
+        brandId: brand.id,
+        ...(jobId ? { jobId } : {}),
+        task: request.task as "relevance" | "report" | "post" | "quality",
+      });
+      return model().invoke(request);
+    },
+  });
   const requiredJob = () => {
     if (!values.id) throw new Error("This command requires --id CONTENT_ID");
     const job = store.get(values.id);
@@ -249,7 +270,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       const sources = await inputSources();
       // Validate settings before reserving a full attempt, but persist before any
       // source fetch or model request. Failures and process crashes are not refunded.
-      const contentModel = model();
+      model();
       if (
         !store.reserveGenerationAttempt({
           brandId: brand.id,
@@ -262,7 +283,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         );
       const result = await generateContent(
         { brand, sources: await loadDocuments(sources) },
-        { model: contentModel },
+        { model: writingModel() },
       );
       console.log(JSON.stringify(result, null, 2));
     } else if (command === "enqueue") {
@@ -292,18 +313,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         brandId: brand.id,
         limit: 10000,
       });
-      const result = values.id
-        ? candidates.find((candidate) => candidate.id === values.id)
-        : candidates;
-      if (!result)
+      const result = values.id ? store.getCandidate(values.id) : candidates;
+      if (!result || (!Array.isArray(result) && result.brandId !== brand.id))
         throw new Error("Candidate does not exist for the selected brand");
       console.log(JSON.stringify(result, null, 2));
     } else if (command === "topics") {
       const topics = store.listTopics({ brandId: brand.id });
-      const result = values.id
-        ? topics.find((topic) => topic.id === values.id)
-        : topics;
-      if (!result)
+      const result = values.id ? store.getTopic(values.id) : topics;
+      if (!result || (!Array.isArray(result) && result.brandId !== brand.id))
         throw new Error("Topic does not exist for the selected brand");
       console.log(JSON.stringify(result, null, 2));
     } else if (command === "retry-candidate") {
@@ -398,7 +415,66 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     } else if (command === "history") {
       console.log(
         JSON.stringify(
-          store.listAuditEvents({ jobId: requiredJob().id, brandId: brand.id }),
+          store.listAuditEvents({
+            ...(values.id ? { jobId: requiredJob().id } : {}),
+            brandId: brand.id,
+          }),
+          null,
+          2,
+        ),
+      );
+    } else if (command === "feedback") {
+      const job = requiredJob();
+      if (
+        !values.reason?.trim() ||
+        !["edit", "reject", "note"].includes(values.kind ?? "")
+      )
+        throw new Error(
+          "Feedback requires --kind edit|reject|note and --reason TEXT",
+        );
+      console.log(
+        JSON.stringify(
+          store.recordFeedback({
+            brandId: brand.id,
+            jobId: job.id,
+            kind: values.kind as "edit" | "reject" | "note",
+            reason: values.reason,
+            ...(values.actor ? { actor: values.actor } : {}),
+          }),
+          null,
+          2,
+        ),
+      );
+    } else if (command === "status") {
+      const jobs = store.list({ brandId: brand.id, limit: 10000 });
+      const candidates = store.listCandidates({
+        brandId: brand.id,
+        limit: 10000,
+      });
+      const incompleteCollections: ReportCollection[] = [];
+      if (jobs.length === 10000) incompleteCollections.push("jobs");
+      if (candidates.length === 10000) incompleteCollections.push("candidates");
+      const budget = store.getGenerationQuota({ brandId: brand.id, ...quota });
+      const report = buildOperationsReport({
+        brandId: brand.id,
+        generatedAt: Date.now(),
+        dayWindow: budget,
+        jobs,
+        candidates,
+        incompleteCollections,
+        generationAttempts: store.listGenerationAttempts({ brandId: brand.id }),
+        selectionCalls: store.listSelectionModelCalls({ brandId: brand.id }),
+        writingCalls: store.listWritingModelCalls({ brandId: brand.id }),
+        feedback: store.listFeedback({ brandId: brand.id }),
+        observations: store.listObservations({ brandId: brand.id }),
+      });
+      console.log(
+        JSON.stringify(
+          {
+            quota: budget,
+            ...report,
+            sources: store.listSourceCheckpoints({ brandId: brand.id }),
+          },
           null,
           2,
         ),
@@ -499,13 +575,13 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
                   leaseMs: config.leaseMs,
                   allowScheduling: config.allowScheduling,
                   quota,
-                  generate: async (input) =>
+                  generate: async (input, job) =>
                     generateContent(
                       {
                         brand: input.brand,
                         sources: await loadDocuments(input.sources),
                       },
-                      { model: model() },
+                      { model: writingModel(job.id) },
                     ),
                 });
                 if (!result) break;
