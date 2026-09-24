@@ -1,0 +1,31 @@
+[
+  {
+    "type": "getx-search",
+    "query": "(\"AI API\" OR \"model release\" OR \"open source model\") -giveaway -airdrop",
+    "product": "Latest",
+    "maxAgeHours": 24,
+    "maxPages": 1,
+    "limit": 5
+  },
+  {
+    "type": "getx-user",
+    "userName": "OpenRouter",
+    "maxAgeHours": 24,
+    "maxPages": 1,
+    "limit": 5
+  },
+  {
+    "type": "getx-user",
+    "userName": "ooffooxx",
+    "maxAgeHours": 24,
+    "maxPages": 1,
+    "limit": 5
+  },
+  {
+    "type": "getx-user",
+    "userName": "LiteLLM",
+    "maxAgeHours": 24,
+    "maxPages": 1,
+    "limit": 5
+  }
+]

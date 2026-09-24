@@ -1,0 +1,168 @@
+# Requires Docker Compose 2.24.4+ for !override / !reset.
+# Base: gitroomhq/postiz-docker-compose@dd4969e5e694cd009619a0d53cff14c21104580b.
+# Run through compose.sh so every bind path resolves from the same project root.
+services:
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:v2.24.0@sha256:01b24a4fc1055f6833122c99614805bea702fdc0ee30c9b5d09330b521fa1efa
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:${POSTIZ_HTTP_PORT:-4007}:5000"
+    environment: !override
+      MAIN_URL: ${POSTIZ_PUBLIC_URL:?Set the browser-accessible URL of Postiz}
+      FRONTEND_URL: ${POSTIZ_PUBLIC_URL:?Set the browser-accessible URL of Postiz}
+      NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_PUBLIC_URL:?Set the browser-accessible URL of Postiz}/api
+      BACKEND_INTERNAL_URL: http://localhost:3000
+      JWT_SECRET: ${POSTIZ_JWT_SECRET:?Generate a random JWT secret}
+      DATABASE_URL: postgresql://postiz-user:${POSTIZ_DB_PASSWORD:?Generate a URL-safe database password}@postiz-postgres:5432/postiz-db-local
+      REDIS_URL: redis://:${POSTIZ_REDIS_PASSWORD:?Generate a URL-safe Redis password}@postiz-redis:6379
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      IS_GENERAL: "true"
+      DISABLE_REGISTRATION: "true"
+      RUN_CRON: "true"
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_STATIC_DIRECTORY: ${POSTIZ_PUBLIC_URL:?Set the browser-accessible URL of Postiz}/uploads
+      X_API_KEY: ${POSTIZ_X_API_KEY:-}
+      X_API_SECRET: ${POSTIZ_X_API_SECRET:-}
+      API_LIMIT: "${POSTIZ_API_LIMIT:-30}"
+
+  postiz-postgres:
+    container_name: !reset null
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${POSTIZ_DB_PASSWORD:?Generate a URL-safe database password}
+
+  postiz-redis:
+    container_name: !reset null
+    ports: !reset []
+    environment:
+      REDIS_PASSWORD: ${POSTIZ_REDIS_PASSWORD:?Generate a URL-safe Redis password}
+    command:
+      [
+        "sh",
+        "-c",
+        'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"',
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG",
+        ]
+
+  temporal-postgresql:
+    container_name: !reset null
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${TEMPORAL_DB_PASSWORD:?Generate a Temporal database password}
+
+  temporal-elasticsearch:
+    container_name: !reset null
+    ports: !reset []
+
+  temporal:
+    container_name: !reset null
+    ports: !reset []
+    environment: !override
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD:?Generate a Temporal database password}
+      POSTGRES_SEEDS: temporal-postgresql
+      DYNAMIC_CONFIG_FILE_PATH: config/production-sql.yaml
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+      TEMPORAL_NAMESPACE: default
+    volumes: !override
+      - type: bind
+        source: ${POSTIZ_UPSTREAM_DIR:?Use deploy/postiz/compose.sh}/dynamicconfig
+        target: /etc/temporal/config/dynamicconfig
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${POSTIZ_DEPLOY_DIR:?Use deploy/postiz/compose.sh}/dynamicconfig/production-sql.yaml
+        target: /etc/temporal/config/production-sql.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+
+  temporal-admin-tools:
+    container_name: !reset null
+    profiles: [admin]
+
+  temporal-ui:
+    container_name: !reset null
+    profiles: [debug]
+    ports: !override
+      - "127.0.0.1:${POSTIZ_TEMPORAL_UI_PORT:-8080}:8080"
+
+  # The upstream Sentry development tool is not part of the maintained stack.
+  spotlight:
+    container_name: !reset null
+    profiles: !override [upstream-spotlight]
+    ports: !reset []
+
+  content-worker:
+    profiles: [worker]
+    build:
+      context: .
+      dockerfile: Dockerfile.postiz
+    image: sma-postiz-content-worker:local
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 45s
+    environment:
+      NODE_ENV: production
+      POSTIZ_BASE_URL: http://postiz:5000/api/public/v1
+      POSTIZ_API_KEY: ${POSTIZ_API_KEY:-}
+      POSTIZ_INTEGRATION_ID: ${POSTIZ_INTEGRATION_ID:-}
+      CONTENT_MODEL_PROVIDER: ${CONTENT_MODEL_PROVIDER:-openai}
+      CONTENT_MODEL: ${CONTENT_MODEL:-}
+      CONTENT_MODEL_API_KEY: ${CONTENT_MODEL_API_KEY:-}
+      CONTENT_MODEL_BASE_URL: ${CONTENT_MODEL_BASE_URL:-}
+      CONTENT_BRAND_FILE: /app/content/brand.json
+      CONTENT_SOURCES_FILE: ${CONTENT_SOURCES_FILE:-}
+      CONTENT_DB_PATH: /data/content.sqlite
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      GETXAPI_TOKEN: ${GETXAPI_TOKEN:-}
+      CONTENT_POLL_INTERVAL_MS: ${CONTENT_POLL_INTERVAL_MS:-60000}
+      CONTENT_DISCOVERY_INTERVAL_MS: ${CONTENT_DISCOVERY_INTERVAL_MS:-86400000}
+      CONTENT_DAILY_GENERATION_LIMIT: ${CONTENT_DAILY_GENERATION_LIMIT:-3}
+      CONTENT_DAILY_TIMEZONE: ${CONTENT_DAILY_TIMEZONE:-Asia/Shanghai}
+      CONTENT_SELECTION_BATCH_SIZE: ${CONTENT_SELECTION_BATCH_SIZE:-20}
+      CONTENT_MAX_SOURCES_PER_TICK: ${CONTENT_MAX_SOURCES_PER_TICK:-5}
+      CONTENT_MAX_JOBS_PER_TICK: ${CONTENT_MAX_JOBS_PER_TICK:-3}
+      CONTENT_AUTO_SUBMIT: ${CONTENT_AUTO_SUBMIT:-true}
+      CONTENT_ALLOW_SCHEDULING: ${CONTENT_ALLOW_SCHEDULING:-false}
+    volumes:
+      - content-data:/data
+      - type: bind
+        source: ${CONTENT_CONFIG_DIR:-./deploy/postiz/private/content}
+        target: /app/content
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - postiz-network
+    depends_on:
+      postiz:
+        condition: service_healthy
+    command: [work]
+
+volumes:
+  content-data:
+
+networks:
+  temporal-network:
+    # Keep names scoped to the Compose project, allowing an unrelated installation.
+    name: !reset null

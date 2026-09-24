@@ -1,0 +1,110 @@
+name: Postiz content worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/postiz/**"
+      - "src/agents/generate-post/nodes/**"
+      - "config/postiz/**"
+      - "deploy/postiz/**"
+      - "docs/POSTIZ-*.md"
+      - ".env.postiz.example"
+      - "Dockerfile.postiz*"
+      - "package.json"
+      - "yarn.lock"
+      - "tsconfig*.json"
+      - "eslint.config.*"
+      - ".github/workflows/postiz-worker.yml"
+  pull_request:
+    paths:
+      - "src/postiz/**"
+      - "src/agents/generate-post/nodes/**"
+      - "config/postiz/**"
+      - "deploy/postiz/**"
+      - "docs/POSTIZ-*.md"
+      - ".env.postiz.example"
+      - "Dockerfile.postiz*"
+      - "package.json"
+      - "yarn.lock"
+      - "tsconfig*.json"
+      - "eslint.config.*"
+      - ".github/workflows/postiz-worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postiz-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm install --global yarn@1.22.22
+      - run: yarn install --frozen-lockfile --ignore-scripts
+      - run: yarn postiz:check
+      - run: yarn postiz:test
+      - run: yarn postiz:build
+      - run: node dist-postiz/src/postiz/cli.js --help
+      - name: Build and verify the worker container
+        run: |
+          docker build --file Dockerfile.postiz --tag postiz-content-worker:ci .
+          docker run --rm --network none --read-only postiz-content-worker:ci --help
+          run_content() {
+            docker run --rm --network none --read-only \
+              --cap-drop ALL --security-opt no-new-privileges:true \
+              --mount type=volume,source=postiz-worker-ci-data,target=/data \
+              --mount "type=bind,source=${GITHUB_WORKSPACE}/config/postiz,target=/app/content,readonly" \
+              --env CONTENT_BRAND_FILE=/app/content/brand.example.json \
+              --env CONTENT_DB_PATH=/data/content.sqlite \
+              --env POSTIZ_INTEGRATION_ID=ci-fixture \
+              postiz-content-worker:ci "$@"
+          }
+          run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-created.json"
+          run_content enqueue --input-json /app/content/input.example.json > "${RUNNER_TEMP}/postiz-repeated.json"
+          run_content candidates > "${RUNNER_TEMP}/postiz-listed.json"
+          run_content show --state queued > "${RUNNER_TEMP}/postiz-jobs.json"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const read = (name) => JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/postiz-${name}.json`, 'utf8'));
+          const created = read('created');
+          const repeated = read('repeated');
+          const listed = read('listed');
+          const jobs = read('jobs');
+          assert.equal(created.candidateIds.length, 1);
+          assert.deepEqual(repeated.candidateIds, created.candidateIds);
+          assert.equal(listed.length, 1);
+          assert.equal(listed[0].id, created.candidateIds[0]);
+          assert.equal(listed[0].status, 'new');
+          assert.deepEqual(jobs, []);
+          console.log('Container entrypoint, non-root candidate persistence, deduplication and no premature jobs passed.');
+          JS
+
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set the Elasticsearch virtual memory limit
+        run: sudo sysctl -w vm.max_map_count=262144
+      - name: Verify the pinned Postiz stack with isolated test configuration
+        env:
+          POSTIZ_STACK_ARTIFACT_DIR: ${{ runner.temp }}/postiz-stack-artifacts
+        run: bash deploy/postiz/test-stack.sh
+      - name: Upload sanitized stack diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postiz-stack-diagnostics
+          path: ${{ runner.temp }}/postiz-stack-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

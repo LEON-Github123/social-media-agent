@@ -1,0 +1,5 @@
+# The upstream development-sql.yaml also enables a development-only cache refresh.
+# Preserve its ID limit without enabling the development-only setting.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}

@@ -1,0 +1,20 @@
+# Deny by default: do not send local business records, secrets, databases or the
+# upstream Postiz checkout to the Docker daemon, even in an unused build layer.
+**
+!package.json
+!yarn.lock
+!tsconfig.json
+!tsconfig.postiz.json
+!src/
+!src/postiz/
+!src/postiz/**/*.ts
+!src/agents/
+!src/agents/generate-post/
+!src/agents/generate-post/nodes/
+!src/agents/generate-post/nodes/prompt-core.ts
+src/postiz/tests/
+**/*.test.ts
+**/*.node-test.ts
+**/.env*
+**/*.pem
+**/*.key
