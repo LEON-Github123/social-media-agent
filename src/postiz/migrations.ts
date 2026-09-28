@@ -235,6 +235,36 @@ const migrations: readonly Migration[] = [
       CREATE INDEX workbench_events_job ON workbench_events (job_id, created_at DESC);
     `,
   },
+  {
+    version: 7,
+    name: "reviewed_candidate_status",
+    // Earlier reviewTopic changed the topic but left its linked candidates in
+    // the model's provisional state. Selection/review audit rows remain intact.
+    sql: `
+      UPDATE content_candidates
+      SET status='selected', last_error=NULL,
+          updated_at=MAX(updated_at,(SELECT updated_at FROM content_topics WHERE id=topic_id))
+      WHERE status='needs_review' AND topic_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM content_topics AS topic
+          WHERE topic.id=content_candidates.topic_id
+            AND topic.brand_id=content_candidates.brand_id
+            AND topic.merged_into_topic_id IS NULL
+            AND topic.status IN ('ready','existing')
+        );
+      UPDATE content_candidates
+      SET status='rejected',
+          last_error=(SELECT reason FROM content_topics WHERE id=topic_id),
+          updated_at=MAX(updated_at,(SELECT updated_at FROM content_topics WHERE id=topic_id))
+      WHERE status IN ('needs_review','selected') AND topic_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM content_topics AS topic
+          WHERE topic.id=content_candidates.topic_id
+            AND topic.brand_id=content_candidates.brand_id
+            AND topic.status='rejected'
+        );
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

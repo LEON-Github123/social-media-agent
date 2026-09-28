@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Worker } from "node:worker_threads";
+import { DatabaseSync } from "node:sqlite";
 import {
   ContentJobStore,
   JobConflictError,
@@ -605,12 +606,32 @@ void test("new evidence cannot bypass manual topic review or rejection and model
     decision: "reject",
     reason: "Unverifiable central claim",
   });
+  assert.equal(store.getCandidate(first.id)?.status, "rejected");
+  assert.equal(store.getCandidate(second.id)?.status, "rejected");
+  assert.equal(
+    store.getCandidate(first.id)?.lastError,
+    "Unverifiable central claim",
+  );
+  assert.throws(
+    () =>
+      store.reviewTopic("review-event", {
+        brandId: brand.id,
+        decision: "approve",
+        reason: "Changing a rejected topic requires a new review workflow",
+      }),
+    JobConflictError,
+  );
   const third = candidate(store, "review-three");
   store.saveSelection({
     brandId: brand.id,
     result: selection([third], "review-event"),
   });
   assert.equal(store.getTopic("review-event")?.status, "rejected");
+  assert.equal(store.getCandidate(third.id)?.status, "rejected");
+  assert.equal(
+    store.getCandidate(third.id)?.lastError,
+    "Unverifiable central claim",
+  );
   assert.throws(
     () =>
       store.enqueueForTopic(
@@ -629,6 +650,123 @@ void test("new evidence cannot bypass manual topic review or rejection and model
     reopened.listGenerationAttempts({ brandId: brand.id }).length,
     0,
   );
+});
+
+void test("approving a multi-source review resolves every linked candidate without erasing model or operator audit", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  const first = candidate(store, "review-approved-first");
+  const second = candidate(store, "review-approved-second");
+  store.saveSelection({
+    brandId: brand.id,
+    result: selection([first, second], "review-approved", "needs_review"),
+  });
+  assert.equal(store.getCandidate(first.id)?.status, "needs_review");
+  assert.equal(store.getCandidate(second.id)?.status, "needs_review");
+  store.reviewTopic("review-approved", {
+    brandId: brand.id,
+    decision: "approve",
+    reason: "Verified both sources describe this evergreen guide",
+  });
+  for (const item of [first, second]) {
+    assert.equal(store.getCandidate(item.id)?.status, "selected");
+    assert.equal(store.getCandidate(item.id)?.lastError, null);
+  }
+  store.enqueueForTopic(
+    "review-approved",
+    job("approved-job", first.input.url),
+  );
+  assert.equal(store.getTopic("review-approved")?.status, "existing");
+  assert.equal(store.getCandidate(second.id)?.status, "selected");
+  const history = store.listAuditEvents({ brandId: brand.id });
+  assert.ok(
+    history.some(
+      (event) =>
+        event.eventType === "selection.completed" &&
+        JSON.stringify(event.after).includes("needs_review"),
+    ),
+  );
+  assert.ok(
+    history.some(
+      (event) =>
+        event.eventType === "topic.reviewed" &&
+        event.reason === "Verified both sources describe this evergreen guide",
+    ),
+  );
+});
+
+void test("version seven repairs already-reviewed candidates with a consistent backup", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  const approved = candidate(store, "historical-approved");
+  const rejected = candidate(store, "historical-rejected");
+  store.saveSelection({
+    brandId: brand.id,
+    result: selection([approved], "historical-approve", "needs_review"),
+  });
+  store.saveSelection({
+    brandId: brand.id,
+    result: selection([rejected], "historical-reject", "needs_review"),
+  });
+  store.reviewTopic("historical-approve", {
+    brandId: brand.id,
+    decision: "approve",
+    reason: "Verified evergreen material",
+  });
+  store.enqueueForTopic(
+    "historical-approve",
+    job("historical-job", approved.input.url),
+  );
+  store.reviewTopic("historical-reject", {
+    brandId: brand.id,
+    decision: "reject",
+    reason: "Unverifiable source",
+  });
+  const history = store.listAuditEvents({ brandId: brand.id });
+  assert.ok(
+    history.some(
+      (event) =>
+        event.eventType === "selection.completed" &&
+        JSON.stringify(event.after).includes("needs_review"),
+    ),
+  );
+  assert.equal(
+    history.filter((event) => event.eventType === "topic.reviewed").length,
+    2,
+  );
+  f.close(store);
+  const old = new DatabaseSync(f.path);
+  old
+    .prepare(
+      "UPDATE content_candidates SET status='needs_review',last_error='Old model concern' WHERE id IN (?,?)",
+    )
+    .run(approved.id, rejected.id);
+  old.prepare("DELETE FROM schema_migrations WHERE version=7").run();
+  old.close();
+  const upgraded = f.open();
+  assert.ok(upgraded.migrationBackupPath);
+  assert.ok(existsSync(upgraded.migrationBackupPath));
+  const backup = new DatabaseSync(upgraded.migrationBackupPath, {
+    readOnly: true,
+  });
+  try {
+    assert.equal(
+      backup
+        .prepare("SELECT status FROM content_candidates WHERE id=?")
+        .get(approved.id)?.status,
+      "needs_review",
+    );
+  } finally {
+    backup.close();
+  }
+  assert.equal(upgraded.getCandidate(approved.id)?.status, "selected");
+  assert.equal(upgraded.getCandidate(approved.id)?.lastError, null);
+  assert.equal(upgraded.getCandidate(rejected.id)?.status, "rejected");
+  assert.equal(
+    upgraded.getCandidate(rejected.id)?.lastError,
+    "Unverifiable source",
+  );
+  assert.deepEqual(upgraded.listAuditEvents({ brandId: brand.id }), history);
 });
 
 void test("legacy distinct-event confirmation cannot bypass submitting, unknown or recorded provider receipts", (t) => {

@@ -1086,7 +1086,9 @@ export abstract class ContentOperationsStore {
                 : ["rejected", "needs_review"].includes(existing.status)
                   ? existing.status
                   : selected.status,
-              selected.reason,
+              existing.status === "rejected"
+                ? existing.reason
+                : selected.reason,
               encode(selected.sourceCandidateIds),
               encode(selected.sourceMetadata),
               encode(conflicts),
@@ -1125,13 +1127,21 @@ export abstract class ContentOperationsStore {
             "Candidate decision and topic assignment disagree",
           );
         }
+        const assignedTopic = decision.topicId
+          ? this.getTopic(topicIds.get(decision.topicId)!)
+          : null;
+        // A later source may match a topic an operator already rejected. The
+        // model's new decision remains in selection.completed, while the
+        // operator's topic decision remains authoritative for this candidate.
         this.db
           .prepare(
             "UPDATE content_candidates SET status=?,last_error=?,updated_at=? WHERE id=?",
           )
           .run(
-            decision.status,
-            decision.reason,
+            assignedTopic?.status === "rejected" ? "rejected" : decision.status,
+            assignedTopic?.status === "rejected"
+              ? assignedTopic.reason
+              : decision.reason,
             this.now(),
             decision.candidateId,
           );
@@ -1196,16 +1206,29 @@ export abstract class ContentOperationsStore {
         throw new JobConflictError(
           `This event already exists or conflicts with recorded content; explicitly merge with a recorded topic: ${reviewed.conflictingTopicIds.join(", ")}`,
         );
+      const reason = text(options.reason, "reason");
+      const now = this.now();
       this.db
         .prepare(
           "UPDATE content_topics SET status=?,reason=?,conflicting_topic_ids_json=?,identity_key=CASE WHEN ?='approve' THEN COALESCE(proposed_identity_key,identity_key) ELSE identity_key END,updated_at=? WHERE id=?",
         )
         .run(
           options.decision === "approve" ? "ready" : "rejected",
-          text(options.reason, "reason"),
+          reason,
           encode(reviewed.conflictingTopicIds),
           options.decision,
-          this.now(),
+          now,
+          id,
+        );
+      this.db
+        .prepare(
+          "UPDATE content_candidates SET status=?,last_error=?,updated_at=? WHERE brand_id=? AND topic_id=? AND status IN ('needs_review','selected')",
+        )
+        .run(
+          options.decision === "approve" ? "selected" : "rejected",
+          options.decision === "approve" ? null : reason,
+          now,
+          before.brandId,
           id,
         );
       const after = this.getTopic(id)!;
@@ -1267,7 +1290,7 @@ export abstract class ContentOperationsStore {
       .run(target.id, before.id);
     this.db
       .prepare(
-        "UPDATE content_candidates SET topic_id=?,status='selected',updated_at=? WHERE topic_id=?",
+        "UPDATE content_candidates SET topic_id=?,status='selected',last_error=NULL,updated_at=? WHERE topic_id=?",
       )
       .run(target.id, now, before.id);
     this.db

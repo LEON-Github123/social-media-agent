@@ -167,7 +167,12 @@
           !!state.snapshot?.runtime?.running ||
           !!state.snapshot?.runtime?.paused;
       else if (button.closest("#app-view form"))
-        button.disabled = busy || !state.snapshot?.readiness?.ready;
+        button.disabled =
+          busy ||
+          !state.snapshot?.readiness?.ready ||
+          !!(
+            button.closest("#job-detail .actions") && $("detail-refresh-error")
+          );
       else button.disabled = busy;
     });
   };
@@ -224,7 +229,11 @@
     $("connection").textContent = "已连接";
   }
 
-  async function refresh({ detail = false, quiet = false } = {}) {
+  async function refresh({
+    detail = false,
+    quiet = false,
+    preserveForm = false,
+  } = {}) {
     if (state.loading || state.busy) return;
     state.loading = true;
     if (!$("loading-view").hidden) {
@@ -239,7 +248,8 @@
       state.snapshot = snapshot;
       showApp();
       render(snapshot);
-      if (detail && state.selectedJob) await loadJob(state.selectedJob);
+      if (detail && state.selectedJob)
+        await loadJob(state.selectedJob, { preserveForm });
       if (!quiet) note("数据已更新。", "success");
     } catch (error) {
       if (!$("app-view").hidden) {
@@ -656,19 +666,39 @@
     });
   }
 
-  async function loadJob(id) {
+  async function loadJob(id, { preserveForm = false } = {}) {
     const target = $("job-detail");
-    clear(target);
-    target.append(empty("正在加载任务", "读取原稿和 Postiz 状态…"));
+    const sameJob = state.detail?.job?.id === id;
+    if (sameJob && preserveForm && activeFormIn("job-detail")) return;
+    if (!sameJob) {
+      clear(target);
+      target.append(empty("正在加载任务", "读取原稿和 Postiz 状态…"));
+    }
     try {
       const detail = await request(`/api/jobs/${encodeURIComponent(id)}`);
       if (state.selectedJob !== id) return;
+      if (sameJob && preserveForm && activeFormIn("job-detail")) return;
       state.detail = detail;
       renderJobDetail(detail);
+      setBusy(state.busy);
     } catch (error) {
       if (state.selectedJob === id) {
-        clear(target);
-        target.append(empty("任务加载失败", error.message));
+        if (sameJob) {
+          target.querySelector("#detail-refresh-error")?.remove();
+          const warning = node(
+            "div",
+            "alert-block",
+            `详情更新失败：${error.message}。以下是上次读取的内容，请刷新后再操作。`,
+          );
+          warning.id = "detail-refresh-error";
+          target.prepend(warning);
+          target.querySelectorAll(".actions button").forEach((button) => {
+            button.disabled = true;
+          });
+        } else {
+          clear(target);
+          target.append(empty("任务加载失败", error.message));
+        }
       }
     }
   }
@@ -1069,6 +1099,7 @@
       refresh({
         detail: !!state.selectedJob && !activeFormIn("job-detail"),
         quiet: true,
+        preserveForm: true,
       });
   }, 30000);
 })();

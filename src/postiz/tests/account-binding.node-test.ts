@@ -218,7 +218,7 @@ void test("version four upgrades with a consistent backup and keeps historical j
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);
   assert.ok(existsSync(upgraded.migrationBackupPath));
-  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v6-")));
+  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v7-")));
   const backup = new DatabaseSync(upgraded.migrationBackupPath, {
     readOnly: true,
   });

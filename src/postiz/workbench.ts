@@ -722,6 +722,8 @@ export async function serveWorkbench(
   if (!publicUrl) throw new Error("CONTENT_WORKBENCH_URL is required");
   await mkdir(dirname(config.dbPath), { recursive: true });
   const store = new ContentJobStore(config.dbPath);
+  if (store.migrationBackupPath)
+    console.error(`Pre-upgrade database backup: ${store.migrationBackupPath}`);
   try {
     let brand: BrandConfig | null = null;
     try {
