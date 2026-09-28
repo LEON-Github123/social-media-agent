@@ -1,3 +1,4 @@
+/* global document, window, URL, fetch */
 (() => {
   "use strict";
 
@@ -82,6 +83,16 @@
   const label = (value) => statusNames[value] || String(value || "—");
   const text = (value) => (value == null || value === "" ? "—" : String(value));
   const array = (value) => (Array.isArray(value) ? value : []);
+  const shortId = (value) =>
+    value && value.length > 24
+      ? `${value.slice(0, 10)}…${value.slice(-8)}`
+      : value;
+  const topicById = (id) =>
+    array(state.snapshot?.topics).find((topic) => topic.id === id);
+  const titleForJob = (id) =>
+    array(state.snapshot?.topics).find(
+      (topic) => topic.jobId === id && !topic.mergedIntoTopicId,
+    )?.title || shortId(id);
   const node = (tag, cls, content) => {
     const el = document.createElement(tag);
     if (cls) el.className = cls;
@@ -428,8 +439,15 @@
         row.append(
           node("p", c.lastError ? "inline-warning" : "reason", reason),
         );
-      if (c.topicId)
-        row.append(node("p", "item-meta", `关联选题：${c.topicId}`));
+      if (c.topicId) {
+        const relation = node(
+          "p",
+          "item-meta",
+          `关联选题：${topicById(c.topicId)?.title || shortId(c.topicId)}`,
+        );
+        relation.title = c.topicId;
+        row.append(relation);
+      }
       if (c.legacyConflict && c.status === "needs_review" && !c.topicId) {
         row.append(
           node(
@@ -570,6 +588,7 @@
         `job-button ${state.selectedJob === job.id ? "selected" : ""}`,
       );
       button.type = "button";
+      button.title = job.id;
       button.setAttribute(
         "aria-current",
         state.selectedJob === job.id ? "true" : "false",
@@ -578,10 +597,14 @@
         button,
         add(
           node("span", "job-button-top"),
-          node("strong", "", job.id),
+          node("strong", "", titleForJob(job.id)),
           pill(job.delivery?.status || job.localState),
         ),
-        node("small", "", `${label(job.localState)} · ${time(job.updatedAt)}`),
+        node(
+          "small",
+          "",
+          `${shortId(job.id)} · ${label(job.localState)} · ${time(job.updatedAt)}`,
+        ),
       );
       button.addEventListener("click", () => {
         state.selectedJob = job.id;
@@ -662,21 +685,19 @@
       (job.state === "unknown"
         ? "unknown"
         : job.postizState?.toLowerCase() || job.state);
+    const heading = node("h3", "", titleForJob(job.id));
+    heading.title = job.id || "";
     add(
       target,
       add(
         node("div", "detail-head"),
-        add(
-          node("div"),
-          node("span", "eyebrow", "TASK DETAIL"),
-          node("h3", "", job.id || "任务详情"),
-        ),
+        add(node("div"), node("span", "eyebrow", "TASK DETAIL"), heading),
         pill(delivery),
       ),
       node(
         "p",
         "item-meta",
-        `${label(job.state)} · ${job.mode === "draft" ? "草稿模式" : "排期模式"} · 更新 ${time(job.updatedAt)}`,
+        `${shortId(job.id)} · ${label(job.state)} · ${job.mode === "draft" ? "草稿模式" : "排期模式"} · 更新 ${time(job.updatedAt)}`,
       ),
     );
     if (job.lastError)
@@ -719,12 +740,14 @@
       section(
         target,
         "检查结果",
-        typeof checks === "string" ? checks : JSON.stringify(checks, null, 2),
-        "pre-wrap mono",
+        typeof checks === "string"
+          ? checks
+          : `${checks.approved === true ? "检查通过" : checks.approved === false ? "检查未通过" : "等待确认"}${array(checks.reasons).length ? `\n${checks.reasons.join("\n")}` : ""}`,
+        "pre-wrap",
       );
     const sources = array(job.input?.sources);
     if (sources.length) {
-      const box = add(node("div", "detail-section"), node("h4", "来源"));
+      const box = add(node("div", "detail-section"), node("h4", "", "来源"));
       sources.forEach((source) =>
         box.append(link(source.url, source.title || source.url)),
       );
@@ -752,7 +775,10 @@
     }
     const history = array(detail.history);
     if (history.length) {
-      const box = add(node("div", "detail-section"), node("h4", "操作历史"));
+      const box = add(
+        node("div", "detail-section"),
+        node("h4", "", "操作历史"),
+      );
       history.forEach((h) =>
         box.append(
           node(
@@ -766,7 +792,7 @@
     }
     const feedback = array(detail.feedback);
     if (feedback.length) {
-      const box = add(node("div", "detail-section"), node("h4", "反馈"));
+      const box = add(node("div", "detail-section"), node("h4", "", "反馈"));
       feedback.forEach((f) =>
         box.append(
           node(
@@ -780,7 +806,10 @@
     }
     const events = array(detail.events);
     if (events.length) {
-      const box = add(node("div", "detail-section"), node("h4", "流程事件"));
+      const box = add(
+        node("div", "detail-section"),
+        node("h4", "", "流程事件"),
+      );
       events.forEach((e) =>
         box.append(
           node(
