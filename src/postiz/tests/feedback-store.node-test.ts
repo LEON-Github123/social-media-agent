@@ -293,7 +293,7 @@ void test("upgrading version three preserves prior jobs and daily reservations i
   f.close(first);
   const previous = new DatabaseSync(f.path);
   previous.exec(
-    "DROP TABLE brand_integrations; DROP TABLE content_feedback; DROP TABLE postiz_observations; DROP TABLE writing_model_calls; DELETE FROM schema_migrations WHERE version>=4;",
+    "DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations; DROP TABLE content_feedback; DROP TABLE postiz_observations; DROP TABLE writing_model_calls; DELETE FROM schema_migrations WHERE version>=4;",
   );
   previous.close();
   const upgraded = f.open();

@@ -17,6 +17,7 @@ export interface WorkerConfig {
     model: string;
     apiKey: string;
     baseURL?: string;
+    thinking?: "enabled" | "disabled";
   };
   postiz: {
     baseUrl: string;
@@ -62,6 +63,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const provider = env.CONTENT_MODEL_PROVIDER || "openai";
   if (provider !== "openai" && provider !== "anthropic")
     throw new Error("CONTENT_MODEL_PROVIDER must be openai or anthropic");
+  if (
+    env.CONTENT_MODEL_THINKING &&
+    !["enabled", "disabled"].includes(env.CONTENT_MODEL_THINKING)
+  )
+    throw new Error("CONTENT_MODEL_THINKING must be enabled or disabled");
   const autoSubmit = env.CONTENT_AUTO_SUBMIT || "true";
   if (autoSubmit !== "true" && autoSubmit !== "false")
     throw new Error("CONTENT_AUTO_SUBMIT must be true or false");
@@ -88,6 +94,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       apiKey: env.CONTENT_MODEL_API_KEY || "",
       ...(env.CONTENT_MODEL_BASE_URL
         ? { baseURL: env.CONTENT_MODEL_BASE_URL }
+        : {}),
+      ...(env.CONTENT_MODEL_THINKING
+        ? { thinking: env.CONTENT_MODEL_THINKING as "enabled" | "disabled" }
         : {}),
     },
     postiz: {

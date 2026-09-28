@@ -7,6 +7,9 @@ LangGraphJS，负责读取来源、结合品牌资料生成内容、检查并提
 这一入口不要求 Agent Server、LangGraph Platform、Arcade、Supabase 或 Slack。
 原仓库的旧入口仍可存在，但不要运行它们来启动本 worker。
 
+需要可视化操作时，使用 [Tokenhot 内容工作台](POSTIZ-WORKBENCH.md)。它展示素材、选题、
+生成任务、失败与额度，复用同一 worker；最终帖子编辑和排期继续在 Postiz 完成。
+
 ## 1. 部署结构与版本
 
 | 部分          | 本方案                                                               |

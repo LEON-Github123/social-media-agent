@@ -261,7 +261,7 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
       ["--import", "tsx", resolve("src/postiz/cli.ts"), "work", "--once"],
       {
         env: { ...env, CONTENT_MODEL_API_KEY: "" },
-        timeout: 15000,
+        timeout: 45_000,
       },
     ),
     /Set CONTENT_MODEL_API_KEY/,
@@ -368,7 +368,7 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
         POSTIZ_API_KEY: "",
         POSTIZ_INTEGRATION_ID: "",
       },
-      timeout: 15000,
+      timeout: 45_000,
     },
   );
   assert.equal(

@@ -210,13 +210,15 @@ void test("version four upgrades with a consistent backup and keeps historical j
   initial.enqueue(job("old", "tokenhot", "account-a"));
   f.close(initial);
   const raw = new DatabaseSync(f.path);
-  raw.exec("DROP TABLE brand_integrations");
-  raw.prepare("DELETE FROM schema_migrations WHERE version = 5").run();
+  raw.exec(
+    "DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations",
+  );
+  raw.prepare("DELETE FROM schema_migrations WHERE version >= 5").run();
   raw.close();
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);
   assert.ok(existsSync(upgraded.migrationBackupPath));
-  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v5-")));
+  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v6-")));
   const backup = new DatabaseSync(upgraded.migrationBackupPath, {
     readOnly: true,
   });

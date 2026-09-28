@@ -7,11 +7,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import { loadBrand, readConfig, safeError } from "./config.js";
+import { serveWorkbench } from "./workbench.js";
+import { runWorkbenchTick } from "./workbench-runtime.js";
 import { createContentModel, type ContentModel } from "./models.js";
 import { generateContent } from "./content.js";
 import { validateJobInput, validateSourceInputs } from "./validation.js";
 import { collectSources } from "./collector.js";
-import { selectAndQueue } from "./pipeline.js";
 import { buildOperationsReport, type ReportCollection } from "./reports.js";
 import {
   ContentJobStore,
@@ -20,13 +21,7 @@ import {
 } from "./store.js";
 import { PostizClient } from "./postiz-client.js";
 import { loadSource, type SourceInput, type SourceConfig } from "./sources.js";
-import {
-  generateNext,
-  submitNext,
-  syncJob,
-  syncSubmitted,
-  assertSchedulingAllowed,
-} from "./runner.js";
+import { submitNext, syncJob, assertSchedulingAllowed } from "./runner.js";
 
 const HELP = `Content worker for Postiz (Node.js 24+)
 
@@ -48,6 +43,7 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli submit --id CONTENT_ID
   yarn postiz:cli sync --id CONTENT_ID [--postiz-id EXISTING_ID [--accept-edited --reason TEXT]]
   yarn postiz:cli integrations
+  yarn postiz:cli serve
 
 Configuration: .env.postiz or CONTENT_ENV_FILE, plus CONTENT_BRAND_FILE.
 preview calls source/model services and consumes the persistent daily writing budget.
@@ -130,6 +126,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     "review-topic",
     "status",
     "feedback",
+    "serve",
   ]);
   if (!commands.has(command) || positionals.length !== 1)
     throw new Error("Unknown command; use --help");
@@ -150,6 +147,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     "review-topic": ["id", "reason", "decision", "merge-with"],
     status: [],
     feedback: ["id", "kind", "reason", "actor"],
+    serve: [],
   };
   for (const [flag, value] of Object.entries(values)) {
     if (
@@ -161,6 +159,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
   if (Number(process.versions.node.split(".")[0]) < 24)
     throw new Error("The Postiz worker requires Node.js 24 or later");
+  if (command === "serve") {
+    await serveWorkbench();
+    return;
+  }
   if (values.schedule && command !== "enqueue")
     throw new Error(
       "--schedule is only accepted by enqueue; use Postiz to reschedule an existing draft",
@@ -547,7 +549,6 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         ),
       );
     } else if (command === "work") {
-      const autoSubmit = config.autoSubmit && !values["no-submit"];
       const controller = new AbortController();
       const stop = () => controller.abort();
       process.once("SIGINT", stop);
@@ -555,112 +556,23 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       try {
         do {
           try {
-            if (
-              config.postiz.integrationId ||
-              store.list({ brandId: brand.id, limit: 1 }).length ||
-              store.listCandidates({ brandId: brand.id, limit: 1 }).length
-            )
-              requireAccount();
-            store.recoverExpired();
-            try {
-              const collection = await discover();
-              if (collection?.checked)
-                console.log(JSON.stringify({ collection }));
-              if (collection?.failed && values.once) process.exitCode = 1;
-            } catch (error) {
-              console.error(safeError(error));
-              if (values.once) process.exitCode = 1;
-            }
-            try {
-              if (
-                store.listCandidates({
-                  brandId: brand.id,
-                  status: "new",
-                  limit: 1,
-                }).length
-              )
-                model();
-              const selection = await selectAndQueue({
-                store,
-                brand,
-                integrationId: config.postiz.integrationId,
-                batchSize: config.selectionBatchSize,
-                sourceOptions: config.source,
-                model: { invoke: (request) => model().invoke(request) },
-              });
-              if (
-                selection.evaluated ||
-                selection.queued ||
-                selection.fetchFailed
-              )
-                console.log(JSON.stringify({ selection }));
-            } catch (error) {
-              console.error(safeError(error));
-              if (values.once) process.exitCode = 1;
-            }
-            try {
-              if (
-                store.list({ brandId: brand.id, state: "queued", limit: 1 })
-                  .length
-              )
-                model();
-              for (
-                let i = 0;
-                i < config.maxJobsPerTick && !controller.signal.aborted;
-                i++
-              ) {
-                const result = await generateNext({
-                  store,
-                  brandId: brand.id,
-                  leaseMs: config.leaseMs,
-                  allowScheduling: config.allowScheduling,
-                  quota,
-                  generate: async (input, job) =>
-                    generateContent(
-                      {
-                        brand: input.brand,
-                        sources: await loadDocuments(input.sources),
-                      },
-                      { model: writingModel(job.id) },
-                    ),
-                });
-                if (!result) break;
-                console.log(JSON.stringify(summary(result)));
-                if (values.once && result.state === "failed")
-                  process.exitCode = 1;
-              }
-            } catch (error) {
-              console.error(safeError(error));
-              if (values.once) process.exitCode = 1;
-            }
-            if (
-              autoSubmit &&
-              store.list({ brandId: brand.id, state: "ready", limit: 1 }).length
-            ) {
-              for (
-                let i = 0;
-                i < config.maxJobsPerTick && !controller.signal.aborted;
-                i++
-              ) {
-                const result = await submitNext({
-                  store,
-                  client: client(),
-                  brandId: brand.id,
-                  leaseMs: config.leaseMs,
-                  allowScheduling: config.allowScheduling,
-                });
-                if (!result) break;
-                console.log(JSON.stringify(summary(result)));
-                if (values.once && ["failed", "unknown"].includes(result.state))
-                  process.exitCode = 1;
-              }
-            }
-            if (
-              config.postiz.apiKey &&
-              store.list({ brandId: brand.id, state: "submitted", limit: 1 })
-                .length
-            )
-              await syncSubmitted(store, client(), brand.id);
+            await runWorkbenchTick({
+              store,
+              config,
+              brand,
+              model,
+              client,
+              signal: controller.signal,
+              autoSubmit: config.autoSubmit && !values["no-submit"],
+              onEvent(event) {
+                if (event.status === "error") {
+                  console.error(event.detail ?? "Operation failed");
+                  if (values.once) process.exitCode = 1;
+                } else if (event.jobId && event.status === "finish") {
+                  console.log(JSON.stringify(event));
+                }
+              },
+            });
           } catch (error) {
             console.error(safeError(error));
             if (values.once) process.exitCode = 1;

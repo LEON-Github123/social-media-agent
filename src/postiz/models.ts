@@ -29,6 +29,8 @@ export interface ModelSettings {
   temperature?: number;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  /** Optional OpenAI-compatible provider switch; omit for providers without it. */
+  thinking?: "enabled" | "disabled";
 }
 
 const settingsSchema = z.object({
@@ -44,6 +46,7 @@ const settingsSchema = z.object({
   temperature: z.number().min(0).max(1).optional(),
   timeoutMs: z.number().int().min(1_000).max(300_000).default(60_000),
   maxOutputTokens: z.number().int().min(256).max(16_000).default(4_096),
+  thinking: z.enum(["enabled", "disabled"]).optional(),
 });
 
 export function modelText(content: unknown): string {
@@ -75,6 +78,10 @@ export function modelText(content: unknown): string {
  */
 export function createContentModel(input: ModelSettings): ContentModel {
   const settings = settingsSchema.parse(input);
+  if (settings.provider !== "openai" && settings.thinking !== undefined)
+    throw new Error(
+      "CONTENT_MODEL_THINKING requires an OpenAI-compatible provider",
+    );
   const common = {
     model: settings.model,
     apiKey: settings.apiKey,
@@ -96,6 +103,9 @@ export function createContentModel(input: ModelSettings): ContentModel {
       : new ChatOpenAI({
           ...common,
           streaming: false,
+          ...(settings.thinking === undefined
+            ? {}
+            : { modelKwargs: { thinking: { type: settings.thinking } } }),
           ...(settings.baseURL
             ? { configuration: { baseURL: settings.baseURL } }
             : {}),

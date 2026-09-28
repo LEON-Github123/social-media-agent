@@ -35,7 +35,8 @@
     "langgraph:in_mem:up": "npx @langchain/langgraph-cli@latest dev --port 54367",
     "postiz:cli": "node --import tsx src/postiz/cli.ts",
     "postiz:worker": "node --import tsx src/postiz/cli.ts work",
-    "postiz:build": "tsc -p tsconfig.postiz.json",
+    "postiz:build": "tsc -p tsconfig.postiz.json && node scripts/build-postiz-assets.mjs",
+    "postiz:serve": "node --import tsx src/postiz/cli.ts serve",
     "postiz:test": "node --import tsx --test src/postiz/tests/*.node-test.ts",
     "postiz:check": "tsc -p tsconfig.postiz.json --noEmit"
   },

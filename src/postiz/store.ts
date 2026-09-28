@@ -175,6 +175,71 @@ export class ContentJobStore extends ContentFeedbackStore {
     this.db.close();
   }
 
+  getWorkbenchPaused(): boolean {
+    const row = this.db
+      .prepare("SELECT paused FROM workbench_runtime WHERE id=1")
+      .get() as { paused: number };
+    return row.paused === 1;
+  }
+
+  setWorkbenchPaused(paused: boolean): boolean {
+    this.db
+      .prepare("UPDATE workbench_runtime SET paused=?,updated_at=? WHERE id=1")
+      .run(paused ? 1 : 0, this.now());
+    return paused;
+  }
+
+  recordWorkbenchEvent(event: {
+    brandId?: string;
+    jobId?: string;
+    stage: string;
+    status: "start" | "finish" | "error";
+    detail?: string;
+  }): void {
+    this.db
+      .prepare(
+        "INSERT INTO workbench_events (id,brand_id,job_id,stage,status,detail,created_at) VALUES (?,?,?,?,?,?,?)",
+      )
+      .run(
+        randomUUID(),
+        event.brandId ?? null,
+        event.jobId ?? null,
+        event.stage,
+        event.status,
+        event.detail ?? null,
+        this.now(),
+      );
+  }
+
+  listWorkbenchEvents(
+    options: { brandId?: string; jobId?: string; limit?: number } = {},
+  ) {
+    const limit = Math.min(200, Math.max(1, options.limit ?? 100));
+    const clauses = ["1=1"];
+    const values: (string | number)[] = [];
+    if (options.brandId) {
+      clauses.push("(brand_id=? OR brand_id IS NULL)");
+      values.push(options.brandId);
+    }
+    if (options.jobId) {
+      clauses.push("job_id=?");
+      values.push(options.jobId);
+    }
+    return this.db
+      .prepare(
+        `SELECT id,brand_id AS brandId,job_id AS jobId,stage,status,detail,created_at AS createdAt FROM workbench_events WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC,rowid DESC LIMIT ?`,
+      )
+      .all(...values, limit) as {
+      id: string;
+      brandId: string | null;
+      jobId: string | null;
+      stage: string;
+      status: "start" | "finish" | "error";
+      detail: string | null;
+      createdAt: number;
+    }[];
+  }
+
   /** Bind a brand to one Postiz account before any brand-scoped write. */
   bindBrandIntegration(brandId: string, integrationId: string): void {
     requiredText(brandId, "brandId");

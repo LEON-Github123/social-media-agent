@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Tokenhot · 内容工作台</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="#overview" aria-label="Tokenhot 内容工作台首页"
+          ><span class="brand-mark" aria-hidden="true">T</span
+          ><span>Tokenhot<small>CONTENT WORKBENCH</small></span></a
+        >
+        <nav class="side-nav" aria-label="工作台分区">
+          <a href="#overview">总览</a><a href="#materials">素材</a
+          ><a href="#candidates">候选</a><a href="#topics">选题审核</a
+          ><a href="#jobs">内容任务</a><a href="#sources">来源检查</a>
+        </nav>
+        <div class="side-note">
+          <span class="eyebrow">工作边界</span>
+          <p>在这里收集与审核。内容到达 Postiz 后，由你完成最终审阅与排期。</p>
+          <a
+            id="sidebar-postiz"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+            hidden
+            >打开 Postiz <span aria-hidden="true">↗</span></a
+          >
+        </div>
+      </aside>
+
+      <main id="main">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">TOKENHOT / OPERATIONS</span>
+            <h1>内容工作台</h1>
+            <p class="subhead">把素材、判断和交付状态放在同一个视野里。</p>
+          </div>
+          <div class="top-actions">
+            <span id="connection" class="connection">正在连接</span
+            ><button id="refresh" class="button ghost" type="button">
+              刷新</button
+            ><button id="logout" class="button ghost" type="button" hidden>
+              退出
+            </button>
+          </div>
+        </header>
+        <div
+          id="notice"
+          class="notice"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></div>
+
+        <section
+          id="loading-view"
+          class="loading-view"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="loading-mark" aria-hidden="true"></span>
+          <h2>正在连接工作台</h2>
+          <p>读取运行状态与今日任务…</p>
+        </section>
+
+        <section
+          id="login-view"
+          class="auth-wrap"
+          hidden
+          aria-labelledby="login-title"
+        >
+          <div class="auth-card">
+            <div class="auth-symbol" aria-hidden="true">T</div>
+            <span class="eyebrow">PRIVATE WORKSPACE</span>
+            <h2 id="login-title">欢迎回来</h2>
+            <p>输入工作台密码，查看今天的素材和内容进度。</p>
+            <form id="login-form">
+              <label for="password">工作台密码</label
+              ><input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+              /><button class="button primary wide" type="submit">
+                进入工作台
+              </button>
+            </form>
+            <p id="login-error" class="field-error" role="alert" hidden></p>
+          </div>
+        </section>
+
+        <div id="app-view" hidden>
+          <section
+            id="overview"
+            class="section overview"
+            aria-labelledby="overview-title"
+          >
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">TODAY'S PULSE</span>
+                <h2 id="overview-title">今天的工作节奏</h2>
+              </div>
+              <span id="snapshot-time" class="muted"></span>
+            </div>
+            <div class="metric-grid">
+              <article class="metric-card accent">
+                <span class="metric-label">今日剩余额度</span
+                ><strong id="quota-value">—</strong
+                ><span id="quota-meta" class="metric-detail"
+                  >北京时间 · 每日上限 3 次</span
+                ><progress
+                  id="quota-fill"
+                  class="quota-track"
+                  max="3"
+                  value="0"
+                  aria-label="今日已用生成额度"
+                ></progress>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">流程状态</span
+                ><strong id="runtime-value">—</strong
+                ><span id="runtime-meta" class="metric-detail">等待状态</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">运行准备</span
+                ><strong id="readiness-value">—</strong
+                ><span id="readiness-meta" class="metric-detail">正在检查</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">待处理事项</span
+                ><strong id="attention-value">—</strong
+                ><span id="attention-meta" class="metric-detail"
+                  >选题与任务</span
+                >
+              </article>
+            </div>
+            <div class="overview-bottom">
+              <div class="card status-card">
+                <div class="card-heading">
+                  <h3>开始一次处理</h3>
+                  <span id="brand-name" class="pill">品牌未配置</span>
+                </div>
+                <p>
+                  收集新素材、筛选选题并生成草稿。提交到 Postiz
+                  之前，先检查下方的准备状态与今日额度。
+                </p>
+                <div class="button-row">
+                  <button id="run" class="button primary" type="button">
+                    运行一次流程</button
+                  ><button id="pause" class="button secondary" type="button">
+                    暂停处理
+                  </button>
+                </div>
+                <p id="runtime-error" class="inline-warning" hidden></p>
+              </div>
+              <div class="card checks-card">
+                <div class="card-heading">
+                  <h3>运行检查</h3>
+                  <span class="muted">每次刷新同步</span>
+                </div>
+                <div id="checks" class="check-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="materials"
+            class="section"
+            aria-labelledby="materials-title"
+          >
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">01 / INPUT</span>
+                <h2 id="materials-title">添加素材</h2>
+                <p>
+                  提交来源链接；已有正文时可一并提供。多条素材可用 JSON
+                  批量导入。
+                </p>
+              </div>
+            </div>
+            <p
+              id="material-readiness"
+              class="inline-warning"
+              role="status"
+              hidden
+            ></p>
+            <div class="two-col">
+              <div class="card">
+                <h3>单条素材</h3>
+                <form id="material-form" class="stack-form">
+                  <label for="material-url"
+                    >来源链接 <span class="required">*</span></label
+                  ><input
+                    id="material-url"
+                    type="url"
+                    placeholder="https://example.com/news"
+                    required
+                  /><label for="material-title"
+                    >标题 <span class="optional">可选</span></label
+                  ><input
+                    id="material-title"
+                    type="text"
+                    placeholder="资料原始标题"
+                  /><label for="material-date"
+                    >发布日期 <span class="optional">可选</span></label
+                  ><input id="material-date" type="datetime-local" /><label
+                    for="material-text"
+                    >已获得的正文 <span class="optional">可选</span></label
+                  ><textarea
+                    id="material-text"
+                    rows="5"
+                    placeholder="粘贴正文或摘录；留空时由流程抓取链接"
+                  ></textarea
+                  ><button class="button primary" type="submit">
+                    添加素材
+                  </button>
+                </form>
+              </div>
+              <div class="card">
+                <h3>批量 JSON</h3>
+                <p class="muted">
+                  粘贴素材数组，例如
+                  <code>[{"url":"https://…","text":"…"}]</code>。每项支持
+                  url、text、title、publishedAt。
+                </p>
+                <form id="batch-form" class="stack-form">
+                  <label for="batch-json">素材数组</label
+                  ><textarea
+                    id="batch-json"
+                    class="code-input"
+                    rows="10"
+                    spellcheck="false"
+                    placeholder='[{"url":"https://example.com/news","title":"标题"}]'
+                    required
+                  ></textarea
+                  ><button class="button secondary" type="submit">
+                    导入 JSON
+                  </button>
+                </form>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" aria-labelledby="activity-title">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">LATEST ACTIVITY</span>
+                <h2 id="activity-title">最近流程动态</h2>
+              </div>
+            </div>
+            <div class="card list-card">
+              <div id="events-list" class="list"></div>
+            </div>
+          </section>
+
+          <section
+            id="candidates"
+            class="section"
+            aria-labelledby="candidates-title"
+          >
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">02 / DISCOVER</span>
+                <h2 id="candidates-title">候选素材</h2>
+                <p>查看采集结果、筛选判断和失败原因。</p>
+              </div>
+              <span id="candidate-count" class="count"></span>
+            </div>
+            <div class="card list-card">
+              <div id="candidates-list" class="list"></div>
+            </div>
+          </section>
+
+          <section id="topics" class="section" aria-labelledby="topics-title">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">03 / DECIDE</span>
+                <h2 id="topics-title">选题审核</h2>
+                <p>有身份冲突的选题需要人工决定是否合并。</p>
+              </div>
+              <span id="topic-count" class="count"></span>
+            </div>
+            <div class="card list-card">
+              <div id="topics-list" class="list"></div>
+            </div>
+          </section>
+
+          <section id="jobs" class="section" aria-labelledby="jobs-title">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">04 / DELIVER</span>
+                <h2 id="jobs-title">内容任务</h2>
+                <p>
+                  查看原稿、质量结果与 Postiz 回执；最终审阅和排期仍在 Postiz。
+                </p>
+              </div>
+              <span id="job-count" class="count"></span>
+            </div>
+            <div class="job-layout">
+              <div class="card list-card">
+                <div id="jobs-list" class="list"></div>
+              </div>
+              <div id="job-detail" class="card detail-card">
+                <div class="empty">
+                  <strong>选择一项任务</strong
+                  ><span>这里会显示来源、原稿、检查结果、历史和操作。</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="sources" class="section" aria-labelledby="sources-title">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">05 / MONITOR</span>
+                <h2 id="sources-title">来源检查</h2>
+                <p>查看每个配置来源的检查点和最近失败。</p>
+              </div>
+              <span id="source-count" class="count"></span>
+            </div>
+            <div class="card list-card">
+              <div id="sources-list" class="list"></div>
+            </div>
+          </section>
+
+          <section class="section pipeline" aria-labelledby="pipeline-title">
+            <span class="eyebrow">THE FLOW</span>
+            <h2 id="pipeline-title">从信号到草稿</h2>
+            <div class="pipeline-steps">
+              <div>
+                <b>01</b><strong>收集</strong
+                ><span>来源与手动素材进入候选池</span>
+              </div>
+              <div>
+                <b>02</b><strong>筛选</strong
+                ><span>核对价值、证据与重复事件</span>
+              </div>
+              <div>
+                <b>03</b><strong>生成</strong
+                ><span>每日最多 3 次，保留原稿与检查结果</span>
+              </div>
+              <div>
+                <b>04</b><strong>交付</strong
+                ><span>Postiz 中做最终审阅与排期</span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

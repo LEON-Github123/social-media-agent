@@ -212,6 +212,29 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 6,
+    name: "workbench_runtime",
+    sql: `
+      CREATE TABLE workbench_runtime (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        paused INTEGER NOT NULL CHECK (paused IN (0, 1)),
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO workbench_runtime (id, paused, updated_at) VALUES (1, 1, 0);
+      CREATE TABLE workbench_events (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT,
+        job_id TEXT,
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('start', 'finish', 'error')),
+        detail TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX workbench_events_recent ON workbench_events (created_at DESC);
+      CREATE INDEX workbench_events_job ON workbench_events (job_id, created_at DESC);
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;
