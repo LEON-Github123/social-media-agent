@@ -31,6 +31,7 @@ import {
 import { JobConflictError } from "./store-errors.js";
 import { readLocalText } from "./files.js";
 import { sourceIdentity } from "./sources.js";
+import { ZodError } from "zod";
 
 type Json = Record<string, unknown>;
 type RuntimeView = {
@@ -91,6 +92,7 @@ export class Workbench {
       lastError: null,
     };
     this.store.recoverExpired();
+    if (this.brand) this.store.seedBrandFacts(this.brand.id);
   }
 
   readiness() {
@@ -205,6 +207,7 @@ export class Workbench {
         : null;
     return {
       brand: brand ? { id: brand.id, name: brand.name } : null,
+      brandFacts: brand ? this.store.listBrandFacts(brand.id) : [],
       readiness: this.readiness(),
       policy: { topicApprovalRequired: true },
       runtime: { ...this.runtime },
@@ -388,6 +391,18 @@ export class Workbench {
   }
 
   async mutate(path: string, body: Json): Promise<unknown> {
+    if (path === "/api/brand-facts") {
+      const brand = this.requireBrand();
+      return { fact: this.store.createBrandFact(brand.id, body) };
+    }
+    const factRoute = /^\/api\/brand-facts\/([^/]+)\/update$/.exec(path);
+    if (factRoute) {
+      const brand = this.requireBrand();
+      const id = decodeURIComponent(factRoute[1]);
+      if (!this.store.listBrandFacts(brand.id).some((fact) => fact.id === id))
+        throw new HttpError(404, "Brand fact was not found");
+      return { fact: this.store.updateBrandFact(brand.id, id, body) };
+    }
     if (path === "/api/run") {
       if (!this.startTick())
         throw new HttpError(
@@ -474,11 +489,33 @@ export class Workbench {
           });
     }
     const jobRoute =
-      /^\/api\/jobs\/([^/]+)\/(retry|feedback|submit|sync)$/.exec(path);
+      /^\/api\/jobs\/([^/]+)\/(retry|revise|feedback|submit|sync)$/.exec(path);
     if (!jobRoute) throw new HttpError(404, "Route was not found");
     const id = decodeURIComponent(jobRoute[1]);
     const action = jobRoute[2];
     const job = this.checkedJob(id);
+    if (action === "revise") {
+      this.requireReady();
+      if (
+        !validReason(body.reason) ||
+        !["edit", "rewrite"].includes(String(body.kind))
+      )
+        throw new HttpError(400, "Revision kind and reason are required");
+      const revision =
+        body.kind === "edit"
+          ? { kind: "edit" as const, post: body.post as string }
+          : {
+              kind: "rewrite" as const,
+              instructions: body.instructions as string,
+            };
+      return {
+        job: this.store.reviseJob(id, {
+          revision,
+          reason: body.reason as string,
+          brandSnapshot: this.requireBrand(),
+        }),
+      };
+    }
     if (action === "retry") {
       if (
         (body.refreshBrand !== undefined &&
@@ -736,7 +773,7 @@ export function createWorkbenchHttp(
           ? error.status
           : error instanceof JobConflictError
             ? 409
-            : error instanceof TypeError
+            : error instanceof TypeError || error instanceof ZodError
               ? 400
               : 500;
       json(response, status, {

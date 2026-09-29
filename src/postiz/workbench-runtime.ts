@@ -130,9 +130,23 @@ export async function runWorkbenchTick(
           limit: config.dailyGenerationLimit,
           timeZone: config.dailyTimeZone,
         },
-        generate: async (input, job) =>
-          generateContent(
-            { brand: input.brand, sources: await loadDocuments(input.sources) },
+        generate: async (input, job) => {
+          const documents = await loadDocuments(input.sources);
+          const evidenceBrand = store.brandWithKnowledge(
+            input.brand,
+            documents,
+          );
+          store.snapshotGenerationInput(job.id, job.leaseToken!, {
+            ...input,
+            brand: evidenceBrand,
+            sources: documents,
+          });
+          return generateContent(
+            {
+              brand: evidenceBrand,
+              sources: documents,
+              revision: input.revision,
+            },
             {
               model: {
                 invoke: async (request) => {
@@ -155,7 +169,8 @@ export async function runWorkbenchTick(
                 },
               },
             },
-          ),
+          );
+        },
       });
       if (!result) break;
       emit(

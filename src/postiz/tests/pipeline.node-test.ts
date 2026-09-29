@@ -103,12 +103,15 @@ void test("same announcement across batches stays one job after an unknown submi
     store,
     brandId: brand.id,
     leaseMs: 30000,
-    generate: async () => ({
+    generate: async (input) => ({
       relevant: true,
       reasoning: "Useful",
       report: "Verified release",
       post: `Model 1.10 adds structured outputs. ${source.url}`,
-      sources: [{ ...source, text: source.text! }],
+      sources: input.sources.map((document) => ({
+        ...document,
+        text: document.text!,
+      })),
       quality: { approved: true, reasons: [] },
     }),
   });

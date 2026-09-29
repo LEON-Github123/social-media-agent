@@ -18,7 +18,8 @@
         <nav class="side-nav" aria-label="工作台分区">
           <a href="#overview">总览</a><a href="#materials">素材</a
           ><a href="#candidates">候选</a><a href="#topics">素材审批</a
-          ><a href="#jobs">内容任务</a><a href="#sources">来源检查</a>
+          ><a href="#jobs">内容任务</a><a href="#brand-facts">品牌事实</a
+          ><a href="#sources">来源检查</a>
         </nav>
         <div class="side-note">
           <span class="eyebrow">工作边界</span>
@@ -321,6 +322,34 @@
                   ><span>这里会显示来源、原稿、检查结果、历史和操作。</span>
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section
+            id="brand-facts"
+            class="section"
+            aria-labelledby="brand-facts-title"
+          >
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">BRAND KNOWLEDGE</span>
+                <h2 id="brand-facts-title">品牌事实库</h2>
+                <p>
+                  官网摘录先待确认。未经确认或已到期的事实不会用于自有产品声明；只有与来源文本匹配的已确认事实才会被选入任务。
+                </p>
+              </div>
+              <span id="brand-fact-count" class="count"></span>
+            </div>
+            <div class="brand-fact-layout">
+              <div class="card">
+                <h3>新增待确认事实</h3>
+                <p class="muted">
+                  请填写可核对的原文摘录与具体匹配词。模型类别的关键词须为完整、精确的模型
+                  ID。
+                </p>
+                <div id="brand-fact-create"></div>
+              </div>
+              <div id="brand-fact-list" class="card list-card"></div>
             </div>
           </section>
 

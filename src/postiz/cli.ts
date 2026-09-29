@@ -236,6 +236,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   };
   await mkdir(dirname(config.dbPath), { recursive: true });
   const store = new ContentJobStore(config.dbPath);
+  store.seedBrandFacts(brand.id);
   const quota = {
     limit: config.dailyGenerationLimit,
     timeZone: config.dailyTimeZone,
@@ -314,8 +315,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         throw new Error(
           "The daily writing limit has been reached; preview and retries share this budget",
         );
+      const documents = await loadDocuments(sources);
       const result = await generateContent(
-        { brand, sources: await loadDocuments(sources) },
+        {
+          brand: store.brandWithKnowledge(brand, documents),
+          sources: documents,
+        },
         { model: writingModel() },
       );
       console.log(JSON.stringify(result, null, 2));

@@ -5,7 +5,11 @@ import {
   type ContentResult,
 } from "./content.js";
 import { safeError } from "./config.js";
-import { validateJobInput, validateSourceDocuments } from "./validation.js";
+import {
+  validateJobInput,
+  validateOutputSourcesForJob,
+  type Revision,
+} from "./validation.js";
 import {
   ContentJobStore,
   type ContentJob,
@@ -27,6 +31,8 @@ export interface JobInput {
   sources: SourceInput[];
   integrationId: string;
   mediaPaths: string[];
+  revision?: Revision;
+  sourceEvidenceSnapshot?: true;
 }
 
 export function enqueueContent(
@@ -226,9 +232,10 @@ export async function submitNext(options: {
     const receipt = await withHeartbeat(store, claimed, leaseMs, async () => {
       const input = jobInput(claimed);
       const output = jobOutput(claimed);
+      store.assertKnowledgeCurrent(input.brand);
       const reasons = validatePost(output.post, {
         brand: input.brand,
-        sources: validateSourceDocuments(output.sources),
+        sources: validateOutputSourcesForJob(input, output.sources),
       });
       if (reasons.length)
         throw new Error(
@@ -250,6 +257,7 @@ export async function submitNext(options: {
         media.push(await client.uploadFile(path));
       // Fence again immediately before the side effect. An expired worker must not send.
       store.renewLease(claimed.id, claimed.leaseToken, leaseMs);
+      store.assertKnowledgeCurrent(input.brand);
       createStarted = true;
       return client.createPost({
         integrationId: input.integrationId,

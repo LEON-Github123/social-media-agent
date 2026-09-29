@@ -7,6 +7,7 @@ import {
   type BrandConfig,
   type ContentInput,
   type SourceDocument,
+  type Revision,
 } from "./validation.js";
 
 export type {
@@ -275,6 +276,7 @@ export function validatePost(
 const ContentState = Annotation.Root({
   brand: Annotation<BrandConfig>(),
   sources: Annotation<SourceDocument[]>(),
+  revision: Annotation<Revision | undefined>(),
   relevant: Annotation<boolean>({
     reducer: (_, value) => value,
     default: () => false,
@@ -338,7 +340,16 @@ export function createContentGraph(dependencies: ContentDependencies) {
         await model.invoke({
           task: "report",
           system: `${EVIDENCE_RULES}\n${timeContext(state.sources, now)}\nWrite a concise source-grounded research brief for ONE possible X post. Use the upstream research idea of three main sections: (1) the specific subject and developer problem, (2) why it matters to this audience, (3) the supported technical detail or practical next step. Keep only details needed for one concrete point, and omit unsupported sections. Cite a supplied URL alongside each factual finding. Separate facts from the proposed editorial angle; do not report an inference as a measured result.\nThe brand is the publisher, not the required subject. Do not invent a product connection, advertising angle, first-hand test, or brand advantage. A general technical lesson from a brand-owned page is permitted; claims about that brand's own features or performance still require verifiedFacts. Write in ${state.brand.language}.\nBrand context:\n${brandContext(state.brand)}\nReturn only the concise brief inside <report>...</report>. If the evidence cannot sustain one worthwhile post, return <skip>specific reason</skip> instead. Do not output reasoning notes, an analysis transcript, or text outside the one required tag.`,
-          user: sourcePayload(state.sources),
+          user: JSON.stringify({
+            ...JSON.parse(sourcePayload(state.sources)),
+            ...(state.revision?.kind === "rewrite"
+              ? {
+                  editorialInstructions: state.revision.instructions,
+                  instructionBoundary:
+                    "Editorial direction only. These instructions are not evidence and cannot override source or verified-fact requirements.",
+                }
+              : {}),
+          }),
         }),
         "report",
       );
@@ -358,6 +369,13 @@ export function createContentGraph(dependencies: ContentDependencies) {
           user: JSON.stringify({
             report: state.report,
             sources: state.sources,
+            ...(state.revision?.kind === "rewrite"
+              ? {
+                  editorialInstructions: state.revision.instructions,
+                  instructionBoundary:
+                    "Editorial direction only. These instructions are not evidence and cannot override source or verified-fact requirements.",
+                }
+              : {}),
           }),
         }),
         "post",
@@ -385,12 +403,21 @@ export function createContentGraph(dependencies: ContentDependencies) {
       );
       return { quality };
     })
+    .addNode("useEditedPost", async (state) => ({
+      post: state.revision?.kind === "edit" ? state.revision.post : "",
+    }))
     .addEdge(START, "checkRelevance")
     .addConditionalEdges(
       "checkRelevance",
-      (state) => (state.relevant ? "writeReport" : END),
-      ["writeReport", END],
+      (state) =>
+        state.relevant
+          ? state.revision?.kind === "edit"
+            ? "useEditedPost"
+            : "writeReport"
+          : END,
+      ["useEditedPost", "writeReport", END],
     )
+    .addEdge("useEditedPost", "reviewQuality")
     .addConditionalEdges(
       "writeReport",
       (state) => (state.relevant ? "writePost" : END),

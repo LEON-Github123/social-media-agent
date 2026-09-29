@@ -39,6 +39,8 @@
     edit: "修改",
     reject: "拒绝",
     note: "备注",
+    verified: "已确认",
+    retired: "已停用",
   };
   const stageNames = {
     discovery: "来源收集",
@@ -118,10 +120,10 @@
       : [
             "needs_review",
             "awaiting_approval",
-            "pending",
             "submitting",
             "processing",
             "queued",
+            "pending",
           ].includes(value)
         ? "warn"
         : [
@@ -131,6 +133,7 @@
               "draft",
               "scheduled",
               "fetched",
+              "verified",
             ].includes(value)
           ? "good"
           : "neutral";
@@ -179,7 +182,8 @@
         button.disabled =
           busy ||
           !state.snapshotHealthy ||
-          !state.snapshot?.readiness?.ready ||
+          (!button.closest("#brand-facts") &&
+            !state.snapshot?.readiness?.ready) ||
           !!(
             button.closest("#job-detail .actions") && $("detail-refresh-error")
           );
@@ -296,15 +300,17 @@
     if (state.busy || !state.snapshotHealthy) return;
     setBusy(true);
     note("正在处理，请稍候…");
+    let succeeded = false;
     try {
       await request(path, "POST", payload);
+      succeeded = true;
       note(success, "success");
       if (options.reset) options.reset();
     } catch (error) {
       note(error.message, "error");
     } finally {
       setBusy(false);
-      await refresh({ detail: true, quiet: true });
+      await refresh({ detail: true, quiet: true, preserveForm: !succeeded });
     }
   }
 
@@ -376,6 +382,7 @@
       renderCandidates(array(s.candidates), report);
     if (!activeFormIn("topics-list")) renderTopics(topics);
     renderJobs(jobs);
+    if (!activeFormIn("brand-fact-list")) renderBrandFacts(array(s.brandFacts));
     renderSources(array(s.sources));
     setBusy(state.busy);
   }
@@ -804,6 +811,220 @@
       $("job-detail").append(empty("选择一项任务", "这里会显示任务详情。"));
     }
   }
+  const localDateInput = (value) => {
+    if (value == null || !Number.isFinite(Number(value))) return "";
+    const date = new Date(Number(value));
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
+  const brandCategoryNames = {
+    integration: "集成",
+    model: "模型",
+    feature: "功能",
+    pricing: "价格",
+  };
+  function brandFactForm(fact) {
+    const form = node("form", "stack-form brand-fact-form");
+    const fields = [
+      ["claim", "可确认的事实", "textarea", fact?.claim || ""],
+      ["url", "官方证据链接", "url", fact?.url || ""],
+      ["evidence", "原文摘录", "textarea", fact?.evidence || ""],
+      [
+        "keywords",
+        "来源匹配词（每行一个；模型填写完整 ID）",
+        "textarea",
+        array(fact?.keywords).join("\n"),
+      ],
+      ["category", "类别", "select", fact?.category || "feature"],
+      [
+        "observedAt",
+        "观察时间",
+        "datetime-local",
+        localDateInput(fact?.observedAt ?? Date.now()),
+      ],
+      [
+        "expiresAt",
+        "到期时间",
+        "datetime-local",
+        localDateInput(fact?.expiresAt ?? Date.now() + 90 * 86400000),
+      ],
+    ];
+    if (fact) fields.push(["reason", "本次修改或确认理由", "textarea", ""]);
+    fields.forEach(([name, caption, type, value]) => {
+      const id = `brand-${fact?.id || "new"}-${name}`;
+      const labelElement = node("label", "", caption);
+      labelElement.htmlFor = id;
+      let input;
+      if (type === "textarea") {
+        input = node("textarea");
+        input.rows = name === "claim" || name === "evidence" ? 3 : 2;
+      } else if (type === "select") {
+        input = node("select");
+        Object.entries(brandCategoryNames).forEach(([key, title]) => {
+          const option = node("option", "", title);
+          option.value = key;
+          input.append(option);
+        });
+      } else {
+        input = node("input");
+        input.type = type;
+      }
+      input.id = id;
+      input.name = name;
+      input.value = value;
+      input.required = true;
+      form.append(labelElement, input);
+    });
+    const help = node(
+      "p",
+      "item-meta",
+      "到期时间须晚于观察时间；价格事实最多 7 天，其他事实最多 90 天。创建后仍须人工核对并明确确认。",
+    );
+    form.append(help);
+    const buttons = node("div", "button-row");
+    const actions = fact
+      ? [
+          ["pending", "保存修改，待重新确认"],
+          ["verified", "我已核对证据，确认事实"],
+          ["retired", "停用事实"],
+        ]
+      : [["pending", "创建待确认事实"]];
+    actions.forEach(([status, caption]) => {
+      const button = node(
+        "button",
+        `button ${status === "verified" ? "primary" : "secondary"}`,
+        caption,
+      );
+      button.type = "submit";
+      button.value = status;
+      button.name = "status";
+      buttons.append(button);
+    });
+    form.append(buttons);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(form).entries());
+      const keywords = values.keywords
+        .split(/\r?\n|，|,/)
+        .map((word) => word.trim())
+        .filter(Boolean);
+      const observedAt = new Date(values.observedAt).getTime();
+      const expiresAt = new Date(values.expiresAt).getTime();
+      const maxDays = values.category === "pricing" ? 7 : 90;
+      if (keywords.length < 1 || keywords.length > 12) {
+        note("请填写 1 至 12 个具体匹配词，每行一个。", "error");
+        return;
+      }
+      if (!safeUrl(values.url)) {
+        note("请填写有效的 http(s) 官方证据链接。", "error");
+        return;
+      }
+      if (fact && !values.reason.trim()) {
+        note("修改、确认或停用都需要填写理由。", "error");
+        return;
+      }
+      if (
+        values.category === "model" &&
+        keywords.some(
+          (word) => !/^(?=.*\d)[a-z0-9]+(?:[-_.][a-z0-9]+)+$/i.test(word),
+        )
+      ) {
+        note("模型匹配词必须是包含版本或变体的完整模型 ID。", "error");
+        return;
+      }
+      if (
+        !Number.isFinite(observedAt) ||
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= observedAt ||
+        expiresAt - observedAt > maxDays * 86400000
+      ) {
+        note(`到期时间必须晚于观察时间，且相隔不超过 ${maxDays} 天。`, "error");
+        return;
+      }
+      const body = {
+        claim: values.claim.trim(),
+        url: values.url.trim(),
+        evidence: values.evidence.trim(),
+        keywords,
+        category: values.category,
+        observedAt,
+        expiresAt,
+      };
+      if (fact) {
+        const status = event.submitter?.value || "pending";
+        mutate(
+          `/api/brand-facts/${encodeURIComponent(fact.id)}/update`,
+          {
+            ...body,
+            status,
+            reason: values.reason.trim(),
+          },
+          status === "verified"
+            ? "事实已确认。"
+            : status === "retired"
+              ? "事实已停用。"
+              : "修改已保存，等待重新确认。",
+          {
+            reset: () => {
+              document.activeElement.blur();
+              form.closest("details").open = false;
+            },
+          },
+        );
+      } else {
+        mutate("/api/brand-facts", body, "事实已创建，等待人工确认。", {
+          reset: () => {
+            $("brand-fact-create").replaceChildren(brandFactForm());
+          },
+        });
+      }
+    });
+    return form;
+  }
+  function renderBrandFacts(items) {
+    const target = $("brand-fact-list");
+    clear(target);
+    $("brand-fact-count").textContent =
+      `${items.length} 条 · ${items.filter((fact) => fact.status === "verified" && fact.expiresAt > Date.now()).length} 条有效`;
+    if (!items.length) {
+      target.append(empty("暂无品牌事实", "添加官方证据后，逐条核对并确认。"));
+      return;
+    }
+    items.forEach((fact) => {
+      const expired = fact.expiresAt <= Date.now();
+      const row = node("article", "list-item");
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", fact.claim),
+          add(
+            node("div", "button-row"),
+            fact.status === "pending"
+              ? node("span", "pill warn", "待确认")
+              : pill(fact.status),
+            expired ? node("span", "pill danger", "已到期") : null,
+          ),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${brandCategoryNames[fact.category] || fact.category} · 观察 ${time(fact.observedAt)} · 到期 ${time(fact.expiresAt)} · 确认 ${time(fact.verifiedAt)}`,
+        ),
+        link(fact.url, "查看官方证据 ↗"),
+        node("p", "source-excerpt", `原文摘录：${fact.evidence}`),
+        node("p", "item-meta", `匹配词：${array(fact.keywords).join("、")}`),
+      );
+      const edit = node("details", "action-form");
+      edit.append(
+        node("summary", "", "编辑、重新确认或停用"),
+        brandFactForm(fact),
+      );
+      row.append(edit);
+      target.append(row);
+    });
+  }
+
   function renderSources(items) {
     const target = $("sources-list");
     clear(target);
@@ -937,8 +1158,11 @@
     if (postiz) target.append(link(postiz, "打开 Postiz 完成最终审阅 ↗"));
     section(
       target,
-      "原始生成内容",
-      reportJob.originalPost || job.output?.post || "暂无原稿",
+      "当前检查稿",
+      reportJob.originalPost ||
+        job.output?.post ||
+        job.input?.revision?.post ||
+        "暂无原稿",
       "pre-wrap",
     );
     const output =
@@ -965,6 +1189,41 @@
       );
       target.append(box);
     }
+    const verifiedFacts = array(job.input?.brand?.verifiedFacts);
+    const factBox = add(
+      node("div", "detail-section"),
+      node("h4", "", "本次选用的已确认品牌事实"),
+    );
+    if (verifiedFacts.length) {
+      verifiedFacts.forEach((fact) =>
+        factBox.append(
+          add(
+            node("div", "topic-source"),
+            node("p", "reason", fact.claim),
+            link(fact.url, "核对事实证据 ↗"),
+            fact.evidence
+              ? node("p", "source-excerpt", `原文摘录：${fact.evidence}`)
+              : null,
+            fact.observedAt || fact.expiresAt
+              ? node(
+                  "p",
+                  "item-meta",
+                  `观察 ${time(fact.observedAt)} · 到期 ${time(fact.expiresAt)}`,
+                )
+              : null,
+          ),
+        ),
+      );
+    } else {
+      factBox.append(
+        node(
+          "p",
+          "muted",
+          "本次来源没有匹配到已确认且有效的品牌事实；内容可聚焦行业信息，不强制提及 Tokenhot，也不能声明自有产品能力。",
+        ),
+      );
+    }
+    target.append(factBox);
     const latest =
       array(detail.observations).at(-1) || reportJob.latestObservation;
     if (latest) {
@@ -991,15 +1250,25 @@
         node("div", "detail-section"),
         node("h4", "", "操作历史"),
       );
-      history.forEach((h) =>
+      history.forEach((h) => {
         box.append(
           node(
             "p",
             "history-line",
             `${time(h.createdAt)} · ${h.eventType || h.type || "记录"} · ${h.reason || ""}`,
           ),
-        ),
-      );
+        );
+        const before = h.before?.output;
+        const after = h.after?.output;
+        if (typeof before?.post === "string")
+          box.append(historicalOutput("查看修改前内容/检查结果", before));
+        if (
+          typeof after?.post === "string" &&
+          (after.post !== before?.post ||
+            JSON.stringify(after.quality) !== JSON.stringify(before?.quality))
+        )
+          box.append(historicalOutput("查看修改后内容/检查结果", after));
+      });
       target.append(box);
     }
     const feedback = array(detail.feedback);
@@ -1043,6 +1312,24 @@
         node("div", cls, body),
       ),
     );
+  }
+  function historicalOutput(caption, output) {
+    const details = node("details", "action-form");
+    details.append(
+      node("summary", "", caption),
+      node("div", "pre-wrap history-content", output.post),
+    );
+    const checks =
+      output.quality || output.check || output.checks || output.qualityCheck;
+    if (checks)
+      details.append(
+        node(
+          "div",
+          "pre-wrap history-content",
+          `检查结果：${typeof checks === "string" ? checks : JSON.stringify(checks, null, 2)}`,
+        ),
+      );
+    return details;
   }
   function renderJobActions(target, job) {
     const actions = add(
@@ -1105,6 +1392,65 @@
           ),
         ),
       );
+    const canRevise =
+      job.writingApproved !== false &&
+      job.mode === "draft" &&
+      ["ready", "rejected", "failed"].includes(job.state) &&
+      !job.postizId &&
+      !job.postizState &&
+      !job.platformPostId &&
+      !job.platformUrl &&
+      !job.leaseToken;
+    if (canRevise) {
+      actions.append(
+        node(
+          "p",
+          "reason",
+          "修改或重新生成都会使用一次今日写作额度。运行后须通过内容检查，才会送到 Postiz 草稿。",
+        ),
+      );
+      const originalPost =
+        typeof job.output?.post === "string" ? job.output.post : "";
+      if (originalPost.trim())
+        actions.append(
+          actionForm(
+            "直接编辑正文并重新检查",
+            [
+              textareaField("post", "编辑后的完整正文", true, originalPost),
+              field("reason", "修改原因（单独记录到审计）", true),
+            ],
+            (values) =>
+              mutate(
+                `/api/jobs/${encodeURIComponent(job.id)}/revise`,
+                { kind: "edit", post: values.post, reason: values.reason },
+                "修改已排队，完成检查后将送至 Postiz 草稿。",
+              ),
+          ),
+        );
+      actions.append(
+        actionForm(
+          "提出实质改写要求并重新生成",
+          [
+            textareaField(
+              "instructions",
+              "具体改写要求（将进入生成提示）",
+              true,
+            ),
+            field("reason", "重新生成原因（单独记录到审计）", true),
+          ],
+          (values) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/revise`,
+              {
+                kind: "rewrite",
+                instructions: values.instructions,
+                reason: values.reason,
+              },
+              "重新生成已排队，完成检查后将送至 Postiz 草稿。",
+            ),
+        ),
+      );
+    }
     if (
       ["failed", "rejected"].includes(job.state) &&
       !job.postizId &&
@@ -1112,9 +1458,9 @@
     )
       actions.append(
         actionForm(
-          "重试任务",
+          "恢复失败任务（不修改正文）",
           [
-            field("reason", "处理原因", true),
+            field("reason", "恢复原因（仅记录日志，不作为改写要求）", true),
             checkbox("refreshBrand", "使用最新品牌配置"),
             checkbox("toDraft", "改为草稿模式"),
           ],
@@ -1185,6 +1531,9 @@
   function field(name, caption, required, value = "") {
     return { type: "text", name, caption, required, value };
   }
+  function textareaField(name, caption, required, value = "") {
+    return { type: "textarea", name, caption, required, value };
+  }
   function checkbox(name, caption) {
     return { type: "checkbox", name, caption };
   }
@@ -1218,6 +1567,11 @@
           opt.textContent = option.label;
           input.append(opt);
         });
+      } else if (spec.type === "textarea") {
+        input = node("textarea");
+        input.rows = spec.name === "post" ? 8 : 4;
+        input.value = spec.value || "";
+        input.required = !!spec.required;
       } else {
         input = document.createElement("input");
         input.type = "text";
@@ -1239,6 +1593,14 @@
         values[spec.name] =
           spec.type === "checkbox" ? input.checked : input.value.trim();
       });
+      const missing = fields.find(
+        (spec) => spec.required && !values[spec.name],
+      );
+      if (missing) {
+        note(`请填写${missing.caption}。`, "error");
+        form.elements.namedItem(missing.name).focus();
+        return;
+      }
       if (values.acceptEdited && !values.reason) {
         note("接受 Postiz 中的修改需要填写核对说明。", "error");
         form.elements.namedItem("reason").focus();
@@ -1325,6 +1687,7 @@
       reset: () => $("batch-form").reset(),
     });
   });
+  $("brand-fact-create").append(brandFactForm());
   refresh();
   state.timer = window.setInterval(() => {
     if (!document.hidden && $("login-view").hidden)

@@ -430,6 +430,28 @@ main {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
+.brand-fact-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.15fr);
+  gap: 14px;
+  align-items: start;
+}
+.brand-fact-layout .card {
+  min-width: 0;
+}
+.brand-fact-layout .card > p {
+  margin: 12px 0;
+  font-size: 0.82rem;
+}
+.brand-fact-form {
+  margin-top: 14px;
+}
+.brand-fact-form .button-row {
+  margin-top: 8px;
+}
+.brand-fact-form .button {
+  margin-top: 0;
+}
 .two-col .card > p {
   font-size: 0.84rem;
   min-height: 60px;
@@ -706,6 +728,9 @@ code {
 .action-form summary:hover {
   color: #bdb7ff;
 }
+.history-content {
+  padding: 0 14px 14px;
+}
 .small-form {
   padding: 4px 14px 15px;
 }
@@ -837,7 +862,8 @@ code {
   .check-list {
     grid-template-columns: 1fr;
   }
-  .job-layout {
+  .job-layout,
+  .brand-fact-layout {
     grid-template-columns: minmax(240px, 0.75fr) minmax(0, 1.25fr);
   }
 }
@@ -876,7 +902,8 @@ code {
   }
   .overview-bottom,
   .two-col,
-  .job-layout {
+  .job-layout,
+  .brand-fact-layout {
     grid-template-columns: 1fr;
   }
   .job-layout .list-card {

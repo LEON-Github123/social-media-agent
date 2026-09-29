@@ -316,6 +316,28 @@ const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 9,
+    name: "brand_knowledge",
+    sql: `
+      CREATE TABLE brand_facts (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        claim TEXT NOT NULL,
+        url TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        keywords_json TEXT NOT NULL,
+        category TEXT NOT NULL CHECK (category IN ('integration','model','feature','pricing')),
+        status TEXT NOT NULL CHECK (status IN ('pending','verified','retired')),
+        observed_at INTEGER NOT NULL,
+        verified_at INTEGER,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX brand_facts_brand ON brand_facts (brand_id, status, expires_at, created_at, id);
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

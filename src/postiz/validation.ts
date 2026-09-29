@@ -14,7 +14,14 @@ export interface BrandConfig {
   contentRules: string[];
   examples: string[];
   language: string;
-  verifiedFacts?: { claim: string; url: string }[];
+  verifiedFacts?: {
+    claim: string;
+    url: string;
+    knowledgeId?: string;
+    evidence?: string;
+    observedAt?: number;
+    expiresAt?: number;
+  }[];
   maxPostLength?: number;
 }
 
@@ -32,13 +39,20 @@ export interface SourceDocument extends SourceInput {
 export interface ContentInput {
   brand: BrandConfig;
   sources: SourceDocument[];
+  revision?: Revision;
 }
+
+export type Revision =
+  { kind: "edit"; post: string } | { kind: "rewrite"; instructions: string };
 
 export interface ValidatedJobInput {
   brand: BrandConfig;
   sources: SourceInput[];
   integrationId: string;
   mediaPaths: string[];
+  revision?: Revision;
+  /** Internal marker: sources contain the exact documents used by generation. */
+  sourceEvidenceSnapshot?: true;
 }
 
 /**
@@ -87,7 +101,18 @@ export const brandSchema = z.object({
   examples: z.array(nonempty(4_000)).max(20).default([]),
   language: nonempty(80).default("English"),
   verifiedFacts: z
-    .array(z.object({ claim: nonempty(4_000), url: sourceUrlSchema }))
+    .array(
+      z
+        .object({
+          claim: nonempty(4_000),
+          url: sourceUrlSchema,
+          knowledgeId: nonempty(100).optional(),
+          evidence: nonempty(4_000).optional(),
+          observedAt: z.number().int().nonnegative().optional(),
+          expiresAt: z.number().int().nonnegative().optional(),
+        })
+        .strict(),
+    )
     .max(50)
     .default([]),
   maxPostLength: z.number().int().min(30).max(280).default(280),
@@ -133,9 +158,17 @@ export const sourceDocumentsSchema = z
     "Source documents exceed the content workflow input limit",
   );
 
+export const revisionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("edit"), post: nonempty(2_000) }).strict(),
+  z
+    .object({ kind: z.literal("rewrite"), instructions: nonempty(4_000) })
+    .strict(),
+]);
+
 export const contentInputSchema = z.object({
   brand: brandSchema,
   sources: sourceDocumentsSchema,
+  revision: revisionSchema.optional(),
 });
 
 export const jobInputSchema = z.object({
@@ -151,6 +184,8 @@ export const jobInputSchema = z.object({
     )
     .max(4)
     .default([]),
+  revision: revisionSchema.optional(),
+  sourceEvidenceSnapshot: z.literal(true).optional(),
 });
 
 export function validateBrand(value: unknown): BrandConfig {
@@ -164,6 +199,34 @@ export function validateSourceInputs(value: unknown): SourceInput[] {
 
 export function validateSourceDocuments(value: unknown): SourceDocument[] {
   return sourceDocumentsSchema.parse(value);
+}
+
+/** Compare a draft's cited evidence with the task's persisted source identity. */
+export function validateOutputSourcesForJob(
+  input: ValidatedJobInput,
+  value: unknown,
+): SourceDocument[] {
+  const documents = validateSourceDocuments(value);
+  if (
+    documents.length !== input.sources.length ||
+    documents.some((source, index) => source.url !== input.sources[index].url)
+  )
+    throw new Error("Draft source URLs differ from the original task");
+  if (
+    input.sourceEvidenceSnapshot &&
+    documents.some((source, index) => {
+      const saved = input.sources[index];
+      return (
+        source.text !== saved.text ||
+        source.title !== saved.title ||
+        source.publishedAt !== saved.publishedAt
+      );
+    })
+  )
+    throw new Error(
+      "Draft source documents differ from the generation evidence snapshot",
+    );
+  return documents;
 }
 
 export function validateContentInput(value: unknown): ContentInput {

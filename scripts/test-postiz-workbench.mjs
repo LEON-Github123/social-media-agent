@@ -98,7 +98,76 @@ try {
     "Missing business credentials are visible, not a process crash",
   );
   assert.equal(body.quota.used, 0);
+  assert.equal(
+    body.brandFacts.length,
+    8,
+    "Bundled research seeds are available",
+  );
+  assert.ok(body.brandFacts.every((fact) => fact.status === "pending"));
   assert.equal(JSON.stringify(body).includes(password), false);
+  // Exercise the shipped routes against this isolated test database only.
+  const factsUrl = `${origin}/api/brand-facts`;
+  assert.equal(
+    (
+      await fetch(factsUrl, {
+        method: "POST",
+        headers: { Origin: origin, "Content-Type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await fetch(factsUrl, {
+        method: "POST",
+        headers: { ...headers, Origin: "https://evil.example" },
+        body: "{}",
+      })
+    ).status,
+    403,
+  );
+  const observedAt = Date.now();
+  const created = await fetch(factsUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      claim: "Test documentation describes bearer authentication.",
+      url: "https://example.com/auth",
+      evidence: "Use a bearer token.",
+      keywords: ["bearer token"],
+      category: "integration",
+      observedAt,
+      expiresAt: observedAt + 86_400_000,
+      status: "verified",
+    }),
+  });
+  assert.equal(created.status, 200);
+  const { fact } = await created.json();
+  assert.equal(
+    fact.status,
+    "pending",
+    "Creation never silently confirms a fact",
+  );
+  const verified = await fetch(`${factsUrl}/${fact.id}/update`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      status: "verified",
+      reason: "Isolated smoke fixture, no live product claim",
+    }),
+  });
+  assert.equal(verified.status, 200);
+  assert.equal((await verified.json()).fact.status, "verified");
+  const invalid = await fetch(`${factsUrl}/${fact.id}/update`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      url: "http://127.0.0.1/private",
+      reason: "Validation fixture",
+    }),
+  });
+  assert.equal(invalid.status, 400);
   assert.equal(
     (
       await fetch(`${origin}/api/pause`, {

@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateContentDatabase } from "./migrations.js";
-import { validateJobInput } from "./validation.js";
+import {
+  validateJobInput,
+  validateOutputSourcesForJob,
+  validateSourceDocuments,
+  revisionSchema,
+  type BrandConfig,
+  type Revision,
+  type SourceInput,
+} from "./validation.js";
 import type { GenerationQuotaOptions } from "./operations-store.js";
-import { ContentFeedbackStore } from "./feedback-store.js";
+import { BrandKnowledgeStore } from "./brand-knowledge.js";
 import { JobConflictError, LeaseLostError } from "./store-errors.js";
 export { JobConflictError, LeaseLostError } from "./store-errors.js";
 export type {
@@ -108,6 +116,13 @@ export interface RepairFailedJob {
   toDraft?: boolean;
 }
 
+export interface ReviseJob {
+  revision: Revision;
+  reason: string;
+  actor?: string;
+  brandSnapshot?: BrandConfig;
+}
+
 export interface AuditEvent {
   id: string;
   jobId: string | null;
@@ -147,7 +162,7 @@ function nullableText(value: unknown): string | null {
  * A submission lease is committed before POST /posts. If its outcome is lost,
  * recovery quarantines the job instead of repeating that non-idempotent POST.
  */
-export class ContentJobStore extends ContentFeedbackStore {
+export class ContentJobStore extends BrandKnowledgeStore {
   readonly migrationBackupPath: string | null;
 
   constructor(path: string, options: { now?: () => number } = {}) {
@@ -681,6 +696,108 @@ export class ContentJobStore extends ContentFeedbackStore {
     return this.claim(options, "queued", "processing");
   }
 
+  brandWithKnowledge(brand: BrandConfig, sources: SourceInput[]): BrandConfig {
+    const staticFacts = (brand.verifiedFacts ?? []).filter(
+      (fact) => !fact.knowledgeId,
+    );
+    const dynamicFacts = this.matchBrandFacts(brand.id, sources).map(
+      (fact) => ({
+        claim: fact.claim,
+        url: fact.url,
+        evidence: fact.evidence,
+        observedAt: fact.observedAt,
+        knowledgeId: fact.id,
+        expiresAt: fact.expiresAt,
+      }),
+    );
+    return {
+      ...brand,
+      verifiedFacts: [...staticFacts, ...dynamicFacts].slice(0, 50),
+    };
+  }
+
+  assertKnowledgeCurrent(brand: BrandConfig): void {
+    const dynamicFacts = (brand.verifiedFacts ?? []).filter(
+      (fact) => fact.knowledgeId,
+    );
+    if (!dynamicFacts.length) return;
+    const current = new Map(
+      this.listBrandFacts(brand.id).map((fact) => [fact.id, fact]),
+    );
+    for (const snapshot of dynamicFacts) {
+      const fact = current.get(snapshot.knowledgeId!);
+      if (
+        !fact ||
+        fact.status !== "verified" ||
+        fact.verifiedAt === null ||
+        fact.expiresAt <= this.now() ||
+        fact.claim !== snapshot.claim ||
+        fact.url !== snapshot.url ||
+        fact.evidence !== snapshot.evidence ||
+        fact.observedAt !== snapshot.observedAt ||
+        fact.expiresAt !== snapshot.expiresAt
+      ) {
+        throw new JobConflictError(
+          "A brand fact was revoked, expired or changed; explicitly review and regenerate this draft",
+        );
+      }
+    }
+  }
+
+  snapshotGenerationInput(
+    id: string,
+    token: string,
+    input: unknown,
+  ): ContentJob {
+    return this.transaction(() => {
+      const before = this.requireJob(id);
+      if (
+        before.state !== "processing" ||
+        before.leaseToken !== token ||
+        before.leaseExpiresAt === null ||
+        before.leaseExpiresAt <= this.now()
+      )
+        throw new LeaseLostError(id);
+      const oldInput = validateJobInput(before.input);
+      const next = validateJobInput(input);
+      if (
+        oldInput.brand.id !== next.brand.id ||
+        oldInput.brand.id !== before.brandId ||
+        oldInput.sources.length !== next.sources.length ||
+        oldInput.sources.some(
+          (source, index) => source.url !== next.sources[index].url,
+        ) ||
+        oldInput.integrationId !== next.integrationId ||
+        JSON.stringify(oldInput.mediaPaths) !==
+          JSON.stringify(next.mediaPaths) ||
+        JSON.stringify(oldInput.revision) !== JSON.stringify(next.revision)
+      )
+        throw new JobConflictError(
+          "Generation evidence snapshot cannot change the task identity or revision",
+        );
+      validateSourceDocuments(next.sources);
+      if (oldInput.sourceEvidenceSnapshot)
+        validateOutputSourcesForJob(oldInput, next.sources);
+      this.assertKnowledgeCurrent(next.brand);
+      this.db
+        .prepare(
+          "UPDATE postiz_content_jobs SET input_json=?,updated_at=? WHERE id=? AND state='processing' AND lease_token=?",
+        )
+        .run(
+          json({ ...next, sourceEvidenceSnapshot: true }),
+          this.now(),
+          id,
+          token,
+        );
+      const after = this.requireJob(id);
+      this.auditJob("job.evidence_snapshotted", before, after, {
+        actor: "system",
+        reason: "Generation source and brand evidence snapshot",
+      });
+      return after;
+    });
+  }
+
   /** Call and commit this before making Postiz's non-idempotent create request. */
   claimSubmit(options: ClaimContentJob): ClaimedContentJob | null {
     return this.claim(options, "ready", "submitting");
@@ -859,6 +976,74 @@ export class ContentJobStore extends ContentFeedbackStore {
         ...action,
         reason: action.reason ?? "Explicit operator retry",
       });
+      return after;
+    });
+  }
+
+  reviseJob(id: string, options: ReviseJob): ContentJob {
+    requiredText(options.reason, "reason");
+    const revision = revisionSchema.parse(options.revision);
+    return this.transaction(() => {
+      const before = this.requireJob(id);
+      if (
+        !before.writingApproved ||
+        before.mode !== "draft" ||
+        !["ready", "rejected", "failed"].includes(before.state) ||
+        before.postizId !== null ||
+        before.postizState !== null ||
+        before.platformPostId !== null ||
+        before.platformUrl !== null ||
+        before.leaseToken !== null
+      )
+        throw new JobConflictError(
+          "Only an approved draft without a provider receipt or active lease can be revised",
+        );
+      const original = validateJobInput(before.input);
+      if (original.brand.id !== before.brandId)
+        throw new JobConflictError("Job brand does not match its input");
+      let sources = original.sources;
+      const output = before.output as {
+        sources?: unknown;
+        post?: unknown;
+      } | null;
+      if (revision.kind === "edit") {
+        if (typeof output?.post !== "string" || !output.post.trim())
+          throw new JobConflictError("Editing requires an existing draft post");
+        try {
+          sources = validateOutputSourcesForJob(original, output.sources);
+        } catch {
+          throw new JobConflictError(
+            "Editing requires original source evidence matching this task",
+          );
+        }
+      } else if (output?.sources) {
+        try {
+          sources = validateOutputSourcesForJob(original, output.sources);
+        } catch {
+          /* Regeneration may reload the original source inputs. */
+        }
+      }
+      const next = validateJobInput({
+        ...original,
+        brand: options.brandSnapshot ?? original.brand,
+        sources,
+        revision,
+      });
+      if (
+        next.brand.id !== before.brandId ||
+        next.integrationId !== original.integrationId
+      )
+        throw new JobConflictError(
+          "Revision cannot change the brand or integration",
+        );
+      this.db
+        .prepare(
+          `UPDATE postiz_content_jobs SET input_json=?,state='queued',
+        output_json=NULL,last_error=NULL,failure_phase=NULL,updated_at=? WHERE id=?`,
+        )
+        .run(json(next), this.now(), id);
+      const after = this.requireJob(id);
+      this.auditJob("job.revised", before, after, options);
       return after;
     });
   }

@@ -418,6 +418,11 @@ void test("new and persisted schedules require explicit draft repair before gene
       },
     ],
   };
+  const scheduledOutput: ContentResult = {
+    ...output,
+    sources: scheduledInput.sources,
+    post: "A separate developer release. https://example.com/scheduled",
+  };
   const date = "2099-01-01T00:00:00Z";
   assert.throws(
     () => enqueueContent(store, scheduledInput, date),
@@ -429,7 +434,7 @@ void test("new and persisted schedules require explicit draft repair before gene
   let generations = 0;
   const generate = async () => {
     generations++;
-    return output;
+    return scheduledOutput;
   };
   const blocked = await generateNext({
     store,
@@ -491,7 +496,7 @@ void test("new and persisted schedules require explicit draft repair before gene
       assert.deepEqual(revised.brand.contentRules, [
         "Use a practical developer example",
       ]);
-      return output;
+      return scheduledOutput;
     },
   });
   const remote = api();
