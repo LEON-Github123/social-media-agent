@@ -903,7 +903,7 @@
     form.append(buttons);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const values = Object.fromEntries(new FormData(form).entries());
+      const values = Object.fromEntries(new window.FormData(form).entries());
       const keywords = values.keywords
         .split(/\r?\n|，|,/)
         .map((word) => word.trim())
