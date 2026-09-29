@@ -611,6 +611,7 @@ void test("versioned migrations preserve every legacy state and create a WAL-con
     .all()) {
     legacy.exec(`DROP TABLE "${String(row.name).replaceAll('"', '""')}"`);
   }
+  legacy.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
   const states = [
     "queued",
     "processing",
@@ -659,14 +660,84 @@ void test("versioned migrations preserve every legacy state and create a WAL-con
   assert.ok(upgraded.migrationBackupPath);
   assert.ok(existsSync(upgraded.migrationBackupPath));
   assert.deepEqual(
-    legacy.prepare("SELECT * FROM postiz_content_jobs ORDER BY id").all(),
-    before,
+    legacy
+      .prepare(
+        "SELECT id,state,input_json,output_json,postiz_id,lease_token FROM postiz_content_jobs ORDER BY id",
+      )
+      .all()
+      .map((row) => ({ ...row })),
+    before.map(
+      ({ id, state, input_json, output_json, postiz_id, lease_token }) => ({
+        id,
+        state,
+        input_json,
+        output_json,
+        postiz_id,
+        lease_token,
+      }),
+    ),
   );
   assert.equal(
     legacy.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()?.n,
     CONTENT_SCHEMA_VERSION,
   );
   assert.equal(upgraded.listAuditEvents().length, 0);
+  for (const state of ["queued", "processing", "ready", "failed", "rejected"])
+    assert.equal(upgraded.get(state)?.writingApproved, false);
+  for (const state of ["submitting", "submitted", "unknown"])
+    assert.equal(upgraded.get(state)?.writingApproved, true);
+  assert.equal(
+    upgraded.claimGeneration({ workerId: "writer", leaseMs: 100 }),
+    null,
+  );
+  assert.equal(
+    upgraded.claimSubmit({ workerId: "sender", leaseMs: 100 }),
+    null,
+  );
+  assert.throws(
+    () =>
+      upgraded.reviewLegacyJob("submitting", {
+        brandId: "legacy-brand",
+        decision: "approve",
+        reason: "Checked",
+      }),
+    JobConflictError,
+  );
+  assert.throws(
+    () =>
+      upgraded.reviewLegacyJob("queued", {
+        brandId: "legacy-brand",
+        decision: "approve",
+        reason: "Checked source snapshot",
+      }),
+    /conversion to a draft/,
+  );
+  assert.equal(upgraded.get("queued")?.writingApproved, false);
+  const approved = upgraded.reviewLegacyJob("queued", {
+    brandId: "legacy-brand",
+    decision: "approve",
+    reason: "Checked source snapshot",
+    convertToDraft: true,
+  });
+  assert.equal(approved.writingApproved, true);
+  assert.equal(approved.mode, "draft");
+  assert.equal(approved.scheduledAt, null);
+  assert.throws(
+    () =>
+      upgraded.reviewLegacyJob("queued", {
+        brandId: "legacy-brand",
+        decision: "approve",
+        reason: "Again",
+      }),
+    JobConflictError,
+  );
+  const rejected = upgraded.reviewLegacyJob("ready", {
+    brandId: "legacy-brand",
+    decision: "reject",
+    reason: "Outdated source",
+  });
+  assert.equal(rejected.state, "rejected");
+  assert.equal(rejected.writingApproved, false);
   const backup = new DatabaseSync(upgraded.migrationBackupPath, {
     readOnly: true,
   });
@@ -687,6 +758,8 @@ void test("versioned migrations preserve every legacy state and create a WAL-con
   const reopened = f.open();
   assert.equal(reopened.migrationBackupPath, null);
   assert.equal(reopened.get("submitted")?.postizId, "remote-123");
+  assert.equal(reopened.get("queued")?.writingApproved, true);
+  assert.equal(reopened.get("ready")?.state, "rejected");
 });
 
 void test("a database from a newer schema is rejected before migration or backup", (t) => {

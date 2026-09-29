@@ -78,12 +78,15 @@ export interface ContentTopic extends ExistingTopic {
   brandId: string;
   identityKey: string;
   title: string;
-  status: "ready" | "needs_review" | "rejected" | "existing";
+  status:
+    "awaiting_approval" | "ready" | "needs_review" | "rejected" | "existing";
   reason: string;
   jobId: string | null;
   createdAt: number;
   updatedAt: number;
   sourceMetadata: TopicSourceMetadata[];
+  approvedEvidenceIds: string[] | null;
+  approvedSources: SourceDocument[] | null;
   proposedIdentityKey: string | null;
   conflictingTopicIds: string[];
   mergedIntoTopicId: string | null;
@@ -879,6 +882,14 @@ export abstract class ContentOperationsStore {
       sourceCandidateIds: JSON.parse(String(row.source_candidate_ids_json)),
       sourceUrls: metadata.map((item) => item.url),
       sourceMetadata: metadata,
+      approvedEvidenceIds:
+        row.approved_evidence_ids_json === null
+          ? null
+          : JSON.parse(String(row.approved_evidence_ids_json)),
+      approvedSources:
+        row.approved_sources_json === null
+          ? null
+          : JSON.parse(String(row.approved_sources_json)),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -1064,7 +1075,9 @@ export abstract class ContentOperationsStore {
               storageKey,
               encode(selected.identity),
               selected.title,
-              selected.status,
+              selected.status === "ready"
+                ? "awaiting_approval"
+                : selected.status,
               selected.reason,
               encode(selected.sourceCandidateIds),
               encode(selected.sourceMetadata),
@@ -1083,9 +1096,16 @@ export abstract class ContentOperationsStore {
               selected.title,
               existing.hasContent
                 ? "existing"
-                : ["rejected", "needs_review"].includes(existing.status)
+                : [
+                      "rejected",
+                      "needs_review",
+                      "awaiting_approval",
+                      "ready",
+                    ].includes(existing.status)
                   ? existing.status
-                  : selected.status,
+                  : selected.status === "ready"
+                    ? "awaiting_approval"
+                    : selected.status,
               existing.status === "rejected"
                 ? existing.reason
                 : selected.reason,
@@ -1174,7 +1194,7 @@ export abstract class ContentOperationsStore {
         !before ||
         before.brandId !== options.brandId ||
         before.hasContent ||
-        before.status !== "needs_review"
+        !["needs_review", "awaiting_approval"].includes(before.status)
       )
         throw new JobConflictError(
           "Only an unbound topic awaiting review can be reviewed",
@@ -1186,15 +1206,20 @@ export abstract class ContentOperationsStore {
           url: candidate.document?.url ?? candidate.input.url,
         };
       });
-      const dynamicConflicts = this.listTopics({ brandId: before.brandId })
-        .filter((topic) => topic.id !== id && topic.status !== "needs_review")
-        .filter(
-          (topic) =>
-            topicIdentityKey(before.brandId, topic.identity) ===
-              before.proposedIdentityKey ||
-            conflictingHistory(before.identity, members, topic),
-        )
-        .map((topic) => topic.id);
+      const dynamicConflicts =
+        before.status === "needs_review"
+          ? this.listTopics({ brandId: before.brandId })
+              .filter(
+                (topic) => topic.id !== id && topic.status !== "needs_review",
+              )
+              .filter(
+                (topic) =>
+                  topicIdentityKey(before.brandId, topic.identity) ===
+                    before.proposedIdentityKey ||
+                  conflictingHistory(before.identity, members, topic),
+              )
+              .map((topic) => topic.id)
+          : [];
       const reviewed = {
         ...before,
         conflictingTopicIds: [
@@ -1207,16 +1232,29 @@ export abstract class ContentOperationsStore {
           `This event already exists or conflicts with recorded content; explicitly merge with a recorded topic: ${reviewed.conflictingTopicIds.join(", ")}`,
         );
       const reason = text(options.reason, "reason");
+      const approvedSources =
+        options.decision === "approve"
+          ? before.sourceCandidateIds.map((candidateId) => {
+              const document = this.getCandidate(candidateId)?.document;
+              if (!document)
+                throw new JobConflictError(
+                  "Review requires every source document to be present",
+                );
+              return sourceDocumentSchema.parse(document);
+            })
+          : null;
       const now = this.now();
       this.db
         .prepare(
-          "UPDATE content_topics SET status=?,reason=?,conflicting_topic_ids_json=?,identity_key=CASE WHEN ?='approve' THEN COALESCE(proposed_identity_key,identity_key) ELSE identity_key END,updated_at=? WHERE id=?",
+          "UPDATE content_topics SET status=?,reason=?,conflicting_topic_ids_json=?,identity_key=CASE WHEN ?='approve' THEN COALESCE(proposed_identity_key,identity_key) ELSE identity_key END,approved_evidence_ids_json=CASE WHEN ?='approve' THEN source_candidate_ids_json ELSE NULL END,approved_sources_json=?,updated_at=? WHERE id=?",
         )
         .run(
           options.decision === "approve" ? "ready" : "rejected",
           reason,
           encode(reviewed.conflictingTopicIds),
           options.decision,
+          options.decision,
+          approvedSources === null ? null : encode(approvedSources),
           now,
           id,
         );
@@ -1342,7 +1380,12 @@ export abstract class ContentOperationsStore {
           throw new JobConflictError("Topic refers to a missing content job");
         return existing;
       }
-      if (topic.status !== "ready" || topic.conflictingTopicIds.length)
+      if (
+        topic.status !== "ready" ||
+        topic.conflictingTopicIds.length ||
+        !topic.approvedEvidenceIds?.length ||
+        !topic.approvedSources?.length
+      )
         throw new JobConflictError(
           "Only a ready, reviewed topic can become a content job",
         );
@@ -1351,20 +1394,15 @@ export abstract class ContentOperationsStore {
         throw new JobConflictError(
           "Job snapshot does not match its topic brand",
         );
-      const allowedUrls = new Set(
-        topic.sourceCandidateIds.flatMap((id) => {
-          const candidate = this.getCandidate(id)!;
-          return [
-            sourceUrlKey(candidate.input.url),
-            ...(candidate.document
-              ? [sourceUrlKey(candidate.document.url)]
-              : []),
-          ];
-        }),
+      const approvedSources = new Set(
+        topic.approvedSources.map((source) =>
+          encode(sourceDocumentSchema.parse(source)),
+        ),
       );
       if (
         validated.sources.some(
-          (source) => !allowedUrls.has(sourceUrlKey(source.url)),
+          (source) =>
+            !approvedSources.has(encode(sourceDocumentSchema.parse(source))),
         )
       )
         throw new JobConflictError(

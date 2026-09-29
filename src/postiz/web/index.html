@@ -17,7 +17,7 @@
         >
         <nav class="side-nav" aria-label="工作台分区">
           <a href="#overview">总览</a><a href="#materials">素材</a
-          ><a href="#candidates">候选</a><a href="#topics">选题审核</a
+          ><a href="#candidates">候选</a><a href="#topics">素材审批</a
           ><a href="#jobs">内容任务</a><a href="#sources">来源检查</a>
         </nav>
         <div class="side-note">
@@ -39,7 +39,9 @@
           <div>
             <span class="eyebrow">TOKENHOT / OPERATIONS</span>
             <h1>内容工作台</h1>
-            <p class="subhead">把素材、判断和交付状态放在同一个视野里。</p>
+            <p class="subhead">
+              每天查看自动采集的素材，批准后生成内容并送到 Postiz 草稿。
+            </p>
           </div>
           <div class="top-actions">
             <span id="connection" class="connection">正在连接</span
@@ -134,10 +136,13 @@
                 ><span id="readiness-meta" class="metric-detail">正在检查</span>
               </article>
               <article class="metric-card">
-                <span class="metric-label">待处理事项</span
+                <span class="metric-label">待你审批</span
                 ><strong id="attention-value">—</strong
                 ><span id="attention-meta" class="metric-detail"
                   >选题与任务</span
+                >
+                <a id="review-link" class="metric-link" href="#topics"
+                  >去审核选题 →</a
                 >
               </article>
             </div>
@@ -148,8 +153,8 @@
                   <span id="brand-name" class="pill">品牌未配置</span>
                 </div>
                 <p>
-                  收集新素材、筛选选题并生成草稿。提交到 Postiz
-                  之前，先检查下方的准备状态与今日额度。
+                  收集官方来源并筛选选题。你批准后才使用今日额度写作， 内容送到
+                  Postiz 草稿后由你审阅和排期。
                 </p>
                 <div class="button-row">
                   <button id="run" class="button primary" type="button">
@@ -282,8 +287,11 @@
             <div class="section-heading">
               <div>
                 <span class="eyebrow">03 / DECIDE</span>
-                <h2 id="topics-title">选题审核</h2>
-                <p>有身份冲突的选题需要人工决定是否合并。</p>
+                <h2 id="topics-title">素材审批</h2>
+                <p>
+                  按同一事件归组查看来源和模型判断；批准写作会使用今日额度并送至
+                  Postiz 草稿。
+                </p>
               </div>
               <span id="topic-count" class="count"></span>
             </div>

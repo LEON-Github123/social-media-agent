@@ -336,7 +336,13 @@ async function rssSources(
   const response = await fetchPublicText(config.url, options);
   if (response.status < 200 || response.status >= 300)
     throw new Error(`RSS request failed with HTTP ${response.status}`);
-  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(response.text))
+  // Embedded article HTML may contain its own DOCTYPE as inert CDATA text.
+  // Ignore XML comments and CDATA when checking for actual XML declarations.
+  const declarations = response.text.replace(
+    /<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g,
+    "",
+  );
+  if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(declarations))
     throw new Error("RSS must not contain a DTD or entity declarations");
   const $ = load(response.text, { xmlMode: true });
   const atom = $("feed").length > 0;

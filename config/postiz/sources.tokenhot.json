@@ -1,0 +1,56 @@
+[
+  {
+    "id": "openai-news",
+    "type": "rss",
+    "url": "https://openai.com/news/rss.xml",
+    "maxAgeHours": 336,
+    "limit": 5,
+    "checkIntervalMs": 21600000,
+    "primary": true
+  },
+  {
+    "id": "google-deepmind",
+    "type": "rss",
+    "url": "https://deepmind.google/blog/rss.xml",
+    "maxAgeHours": 336,
+    "limit": 3,
+    "checkIntervalMs": 21600000,
+    "primary": true
+  },
+  {
+    "id": "huggingface-blog",
+    "type": "rss",
+    "url": "https://huggingface.co/blog/feed.xml",
+    "maxAgeHours": 336,
+    "limit": 3,
+    "checkIntervalMs": 21600000,
+    "primary": false
+  },
+  {
+    "id": "github-ai",
+    "type": "rss",
+    "url": "https://github.blog/ai-and-ml/feed/",
+    "maxAgeHours": 336,
+    "limit": 3,
+    "checkIntervalMs": 21600000,
+    "primary": true
+  },
+  {
+    "id": "github-copilot-changelog",
+    "type": "rss",
+    "url": "https://github.blog/changelog/label/copilot/feed/",
+    "maxAgeHours": 336,
+    "limit": 3,
+    "checkIntervalMs": 21600000,
+    "primary": true
+  },
+  {
+    "id": "google-ai-blog",
+    "type": "rss",
+    "url": "https://blog.google/innovation-and-ai/technology/ai/rss/",
+    "maxAgeHours": 336,
+    "limit": 3,
+    "checkIntervalMs": 21600000,
+    "primary": true
+  }
+]

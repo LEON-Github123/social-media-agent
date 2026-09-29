@@ -9,6 +9,7 @@
     detail: null,
     busy: false,
     loading: false,
+    snapshotHealthy: false,
     timer: null,
   };
   const statusNames = {
@@ -16,6 +17,7 @@
     selected: "已选中",
     rejected: "已拒绝",
     needs_review: "待审核",
+    awaiting_approval: "待批准写作",
     failed: "失败",
     ready: "就绪",
     existing: "已有选题",
@@ -41,8 +43,8 @@
   const stageNames = {
     discovery: "来源收集",
     selection: "选题筛选",
-    writing: "内容生成",
-    submission: "提交 Postiz",
+    writing: "检查待写任务",
+    submission: "检查待交付草稿",
     sync: "同步 Postiz",
     tick: "流程",
     pause: "暂停状态",
@@ -89,6 +91,10 @@
       : value;
   const topicById = (id) =>
     array(state.snapshot?.topics).find((topic) => topic.id === id);
+  const legacyNeedsApproval = (job, stateKey) =>
+    ["queued", "ready", "failed"].includes(job?.[stateKey]) &&
+    job.writingApproved === false &&
+    !job.postizId;
   const titleForJob = (id) =>
     array(state.snapshot?.topics).find(
       (topic) => topic.jobId === id && !topic.mergedIntoTopicId,
@@ -111,6 +117,7 @@
       ? "danger"
       : [
             "needs_review",
+            "awaiting_approval",
             "pending",
             "submitting",
             "processing",
@@ -159,21 +166,31 @@
   const setBusy = (busy) => {
     state.busy = busy;
     document.querySelectorAll("button").forEach((button) => {
-      if (button.id === "refresh") return;
+      if (!button.closest("#app-view")) return;
+      if (button.id === "refresh" || button.id === "logout") return;
       if (button.id === "run")
         button.disabled =
           busy ||
+          !state.snapshotHealthy ||
           !state.snapshot?.readiness?.ready ||
           !!state.snapshot?.runtime?.running ||
           !!state.snapshot?.runtime?.paused;
       else if (button.closest("#app-view form"))
         button.disabled =
           busy ||
+          !state.snapshotHealthy ||
           !state.snapshot?.readiness?.ready ||
           !!(
             button.closest("#job-detail .actions") && $("detail-refresh-error")
           );
-      else button.disabled = busy;
+      else
+        button.disabled =
+          busy ||
+          !state.snapshotHealthy ||
+          !!(
+            button.closest("#job-detail .actions") && $("detail-refresh-error")
+          ) ||
+          !!(button.dataset.requiresReady && !state.snapshot?.readiness?.ready);
     });
   };
 
@@ -246,12 +263,15 @@
     try {
       const snapshot = await request("/api/snapshot");
       state.snapshot = snapshot;
+      state.snapshotHealthy = true;
       showApp();
       render(snapshot);
       if (detail && state.selectedJob)
         await loadJob(state.selectedJob, { preserveForm });
       if (!quiet) note("数据已更新。", "success");
     } catch (error) {
+      state.snapshotHealthy = false;
+      setBusy(false);
       if (!$("app-view").hidden) {
         $("connection").textContent = "连接异常";
         note(error.message, "error");
@@ -273,7 +293,7 @@
     }
   }
   async function mutate(path, payload, success, options = {}) {
-    if (state.busy) return;
+    if (state.busy || !state.snapshotHealthy) return;
     setBusy(true);
     note("正在处理，请稍候…");
     try {
@@ -292,11 +312,14 @@
     const report = s.report || {};
     const jobs = array(report.jobs?.items);
     const topics = array(s.topics);
-    const waiting = topics.filter(
+    const awaiting = topics.filter(
+      (t) => t.status === "awaiting_approval" && !t.mergedIntoTopicId,
+    ).length;
+    const grouping = topics.filter(
       (t) => t.status === "needs_review" && !t.mergedIntoTopicId,
     ).length;
-    const repair = jobs.filter((j) =>
-      ["failed", "rejected", "unknown"].includes(j.localState),
+    const pendingJobs = jobs.filter((job) =>
+      legacyNeedsApproval(job, "localState"),
     ).length;
     $("snapshot-time").textContent =
       `更新于 ${time(report.scope?.generatedAt || Date.now())} · 北京时间`;
@@ -327,9 +350,14 @@
     $("material-readiness").textContent = missing.length
       ? `素材提交暂不可用：${missing.map((check) => missingCheckHelp[check.key] || checkNames[check.key] || check.label).join("、")}。请检查服务端配置。`
       : "";
-    $("attention-value").textContent = String(waiting + repair);
+    $("attention-value").textContent = String(
+      awaiting + grouping + pendingJobs,
+    );
     $("attention-meta").textContent =
-      `${waiting} 个待审选题 · ${repair} 个待处理任务`;
+      `${awaiting} 个待批准 · ${grouping} 个归组核对 · ${pendingJobs} 个历史待批任务`;
+    $("review-link").href = awaiting + grouping ? "#topics" : "#jobs";
+    $("review-link").textContent =
+      awaiting + grouping ? "去审核素材 →" : "查看内容任务 →";
     $("brand-name").textContent = s.brand?.name || "品牌未配置";
     $("runtime-error").textContent = s.runtime?.lastError || "";
     $("runtime-error").hidden = !s.runtime?.lastError;
@@ -507,81 +535,223 @@
         target,
         empty("暂无选题", "流程筛选素材后，选题会出现在这里。"),
       );
-    items.forEach((topic) => {
-      const row = node("article", "list-item");
-      add(
-        row,
+    const order = { awaiting_approval: 0, needs_review: 1 };
+    [...items]
+      .sort(
+        (a, b) =>
+          (order[a.status] ?? 2) - (order[b.status] ?? 2) ||
+          b.createdAt - a.createdAt,
+      )
+      .forEach((topic) => {
+        const row = node("article", "list-item");
+        const needsReview = topic.status === "needs_review";
         add(
-          node("div", "item-top"),
-          node("h3", "", topic.title || topic.identity?.product || topic.id),
-          pill(topic.status),
-        ),
-        node(
-          "p",
-          "item-meta",
-          `${topic.identity?.entity || "未识别实体"} · ${topic.identity?.eventType || "事件待定"} · ${time(topic.createdAt)}`,
-        ),
-      );
-      if (topic.reason) row.append(node("p", "reason", topic.reason));
-      if (topic.mergedIntoTopicId)
-        row.append(
-          node("p", "item-meta", `已合并到：${topic.mergedIntoTopicId}`),
-        );
-      if (array(topic.conflictingTopicIds).length)
-        row.append(
+          row,
+          add(
+            node("div", "item-top"),
+            node("h3", "", topic.title || topic.identity?.product || topic.id),
+            needsReview
+              ? node("span", "pill warn", "归组待核对")
+              : pill(topic.status),
+          ),
           node(
             "p",
-            "inline-warning",
-            `可能重复：${topic.conflictingTopicIds.join("、")}`,
+            "item-meta",
+            `${topic.identity?.entity || "未识别实体"} · ${topic.identity?.eventType || "事件待定"} · 发现于 ${time(topic.createdAt)}`,
           ),
         );
-      const sources = add(
-        node("div", "source-links"),
-        node("small", "", "证据来源"),
-      );
-      array(topic.sourceUrls).forEach((url) => sources.append(link(url, url)));
-      if (sources.childElementCount > 1) row.append(sources);
-      if (
-        topic.status === "needs_review" &&
-        !topic.mergedIntoTopicId &&
-        !topic.hasContent
-      ) {
-        const options = array(topic.conflictingTopicIds)
-          .filter((id) => id && id !== topic.id)
-          .map((id) => ({ value: id, label: id }));
-        row.append(
-          actionForm(
-            "审核选题",
-            [
-              selectField("decision", "审核决定", [
-                { value: "approve", label: "通过" },
-                { value: "reject", label: "拒绝" },
-              ]),
-              field("reason", "审核理由", true),
-              ...(options.length
-                ? [
-                    selectField("mergeWith", "合并到已有选题（可选）", [
-                      { value: "", label: "不合并" },
-                      ...options,
-                    ]),
-                  ]
-                : []),
-            ],
-            async (values) =>
-              mutate(
-                `/api/topics/${encodeURIComponent(topic.id)}/review`,
-                {
-                  decision: values.decision,
-                  reason: values.reason,
-                  ...(values.mergeWith ? { mergeWith: values.mergeWith } : {}),
-                },
-                "审核结果已保存。",
+        if (needsReview)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "同题归组需要核对。确认事件身份与已有内容的关系后再决定。",
+            ),
+          );
+        if (topic.reason)
+          row.append(
+            node(
+              "p",
+              "reason",
+              `${["awaiting_approval", "needs_review"].includes(topic.status) ? "模型判断" : "审核记录"}：${topic.reason}`,
+            ),
+          );
+        if (topic.mergedIntoTopicId)
+          row.append(
+            node("p", "item-meta", `已合并到：${topic.mergedIntoTopicId}`),
+          );
+        if (array(topic.conflictingTopicIds).length)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              `可能重复：${topic.conflictingTopicIds.join("、")}`,
+            ),
+          );
+        const sources = add(
+          node("div", "topic-sources"),
+          node("small", "", `同题素材 · ${array(topic.sourceUrls).length} 条`),
+        );
+        const candidates = new Map(
+          array(state.snapshot?.candidates).map((candidate) => [
+            candidate.id,
+            candidate,
+          ]),
+        );
+        const metadata = array(topic.sourceMetadata);
+        const sourceItems = metadata.length
+          ? metadata
+          : array(topic.sourceUrls).map((url, index) => ({
+              url,
+              candidateId: array(topic.sourceCandidateIds)[index],
+            }));
+        sourceItems.forEach((source) => {
+          const candidate = candidates.get(source.candidateId);
+          const url =
+            source.url || candidate?.document?.url || candidate?.input?.url;
+          const title =
+            candidate?.document?.title || candidate?.input?.title || url;
+          const item = node("div", "topic-source");
+          item.append(link(url, title || "查看来源"));
+          const score = Number.isFinite(source.totalScore)
+            ? ` · 筛选评分 ${source.totalScore}/100`
+            : "";
+          item.append(
+            node(
+              "p",
+              "item-meta",
+              `${candidate?.sourceId || candidate?.origin || "来源"}${source.primary ? " · 主来源" : ""} · 发布于 ${time(source.publishedAt || candidate?.document?.publishedAt || candidate?.input?.publishedAt)}${score}`,
+            ),
+          );
+          const excerpt = (
+            candidate?.document?.text ||
+            candidate?.input?.text ||
+            ""
+          )
+            .replace(/\s+/g, " ")
+            .trim();
+          if (excerpt)
+            item.append(
+              node(
+                "p",
+                "source-excerpt",
+                excerpt.length > 280 ? `${excerpt.slice(0, 280)}…` : excerpt,
               ),
-          ),
-        );
-      }
-      target.append(row);
-    });
+            );
+          sources.append(item);
+        });
+        if (sourceItems.length) row.append(sources);
+        if (
+          ["awaiting_approval", "needs_review"].includes(topic.status) &&
+          !topic.mergedIntoTopicId &&
+          !topic.hasContent
+        ) {
+          const endpoint = `/api/topics/${encodeURIComponent(topic.id)}/review`;
+          if (!needsReview) {
+            const actions = node("div", "topic-actions");
+            const approve = node("button", "button primary", "批准写作");
+            approve.type = "button";
+            approve.dataset.requiresReady = "true";
+            approve.addEventListener("click", () =>
+              mutate(
+                endpoint,
+                {
+                  decision: "approve",
+                  reason: "人工批准写作并送至 Postiz 草稿",
+                },
+                "已批准写作，任务将使用今日额度并生成 Postiz 草稿。",
+              ),
+            );
+            actions.append(approve);
+            actions.append(
+              actionForm(
+                "跳过此选题",
+                [field("reason", "跳过原因或备注", true)],
+                async (values) =>
+                  mutate(
+                    endpoint,
+                    { decision: "reject", reason: values.reason },
+                    "已跳过此选题。",
+                  ),
+              ),
+            );
+            row.append(actions);
+          } else {
+            const conflicts = array(topic.conflictingTopicIds);
+            const options = array(topic.conflictingTopicIds)
+              .filter((id) => id && id !== topic.id && topicById(id)?.jobId)
+              .map((id) => ({ value: id, label: topicById(id)?.title || id }));
+            if (conflicts.length && !options.length)
+              row.append(
+                node(
+                  "p",
+                  "inline-warning",
+                  "存在尚不能合并的历史冲突；请先核对关联任务。",
+                ),
+              );
+            if (options.length)
+              row.append(
+                node(
+                  "p",
+                  "reason",
+                  "选择合并会把证据加入已有内容，不会另起写作任务。",
+                ),
+              );
+            row.append(
+              actionForm(
+                "核对归组",
+                [
+                  selectField("decision", "审核决定", [
+                    { value: "reject", label: "跳过此选题" },
+                    ...(!conflicts.length || options.length
+                      ? [
+                          {
+                            value: "approve",
+                            label: conflicts.length
+                              ? "确认并合并到已有内容"
+                              : "确认后批准写作",
+                          },
+                        ]
+                      : []),
+                  ]),
+                  field("reason", "核对说明", true),
+                  ...(options.length
+                    ? [
+                        selectField(
+                          "mergeWith",
+                          "合并到已有内容（批准时必选）",
+                          [{ value: "", label: "不合并" }, ...options],
+                        ),
+                      ]
+                    : []),
+                ],
+                async (values) => {
+                  if (
+                    values.decision === "approve" &&
+                    conflicts.length &&
+                    !values.mergeWith
+                  ) {
+                    note("该选题与已有内容冲突，请选择合并目标。", "error");
+                    return;
+                  }
+                  mutate(
+                    endpoint,
+                    {
+                      decision: values.decision,
+                      reason: values.reason,
+                      ...(values.decision === "approve" && values.mergeWith
+                        ? { mergeWith: values.mergeWith }
+                        : {}),
+                    },
+                    "归组核对结果已保存。",
+                  );
+                },
+              ),
+            );
+          }
+        }
+        target.append(row);
+      });
   }
   function renderJobs(items) {
     const target = $("jobs-list");
@@ -608,7 +778,11 @@
         add(
           node("span", "job-button-top"),
           node("strong", "", titleForJob(job.id)),
-          pill(job.delivery?.status || job.localState),
+          pill(
+            legacyNeedsApproval(job, "localState")
+              ? "awaiting_approval"
+              : job.delivery?.status || job.localState,
+          ),
         ),
         node(
           "small",
@@ -711,7 +885,9 @@
         (item) => item.id === job.id,
       ) || {};
     const delivery =
-      reportJob.delivery?.status ||
+      (legacyNeedsApproval(job, "state")
+        ? "awaiting_approval"
+        : reportJob.delivery?.status) ||
       (job.state === "unknown"
         ? "unknown"
         : job.postizState?.toLowerCase() || job.state);
@@ -867,7 +1043,53 @@
       node("div", "detail-section actions"),
       node("h4", "", "处理此任务"),
     );
-    if (job.state === "ready" && job.mode === "draft")
+    const pendingApproval = legacyNeedsApproval(job, "state");
+    if (pendingApproval) {
+      actions.append(
+        node(
+          "p",
+          "reason",
+          job.mode === "schedule"
+            ? "这是升级前留下的排期任务。批准时会转成 Postiz 草稿，由你在 Postiz 审阅并排期。"
+            : "这是升级前留下的任务。批准后继续处理；尚未生成内容时会使用写作额度。",
+        ),
+      );
+      const approve = node(
+        "button",
+        "button primary",
+        job.mode === "schedule" ? "转为草稿并批准" : "批准写作",
+      );
+      approve.type = "button";
+      approve.dataset.requiresReady = "true";
+      approve.addEventListener("click", () =>
+        mutate(
+          `/api/jobs/${encodeURIComponent(job.id)}/review`,
+          {
+            decision: "approve",
+            reason:
+              job.mode === "schedule"
+                ? "人工批准将旧排期任务转为 Postiz 草稿"
+                : "人工批准继续处理并送至 Postiz 草稿",
+            ...(job.mode === "schedule" ? { convertToDraft: true } : {}),
+          },
+          "已批准继续处理，内容将送至 Postiz 草稿。",
+        ),
+      );
+      actions.append(approve);
+      actions.append(
+        actionForm(
+          "跳过此任务",
+          [field("reason", "跳过原因或备注", true)],
+          async (values) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/review`,
+              { decision: "reject", reason: values.reason },
+              "已跳过此任务。",
+            ),
+        ),
+      );
+    }
+    if (job.state === "ready" && job.mode === "draft" && !pendingApproval)
       actions.append(
         actionForm("提交到 Postiz 草稿", [], async () =>
           mutate(
@@ -877,7 +1099,11 @@
           ),
         ),
       );
-    if (["failed", "rejected"].includes(job.state) && !job.postizId)
+    if (
+      ["failed", "rejected"].includes(job.state) &&
+      !job.postizId &&
+      !pendingApproval
+    )
       actions.append(
         actionForm(
           "重试任务",

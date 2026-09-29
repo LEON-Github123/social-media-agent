@@ -63,7 +63,7 @@ export type ReportJob = Pick<
   | "failurePhase"
   | "createdAt"
   | "updatedAt"
->;
+> & { writingApproved?: boolean };
 
 export type ReportCandidate = Pick<
   ContentCandidate,
@@ -186,6 +186,7 @@ export function classifyDelivery(
 export interface JobReport {
   id: string;
   localState: ReportJob["state"];
+  writingApproved: boolean;
   mode: ReportJob["mode"];
   scheduledAt: string | null;
   delivery: DeliveryClassification;
@@ -484,6 +485,7 @@ export function buildOperationsReport(
     return {
       id: job.id,
       localState: job.state,
+      writingApproved: job.writingApproved ?? true,
       mode: job.mode,
       scheduledAt: job.scheduledAt,
       delivery: classifyDelivery(job),

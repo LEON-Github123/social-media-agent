@@ -213,12 +213,15 @@ void test("version four upgrades with a consistent backup and keeps historical j
   raw.exec(
     "DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations",
   );
+  raw.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
+  raw.exec("ALTER TABLE content_topics DROP COLUMN approved_sources_json");
+  raw.exec("ALTER TABLE content_topics DROP COLUMN approved_evidence_ids_json");
   raw.prepare("DELETE FROM schema_migrations WHERE version >= 5").run();
   raw.close();
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);
   assert.ok(existsSync(upgraded.migrationBackupPath));
-  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v7-")));
+  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v8-")));
   const backup = new DatabaseSync(upgraded.migrationBackupPath, {
     readOnly: true,
   });

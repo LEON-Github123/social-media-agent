@@ -273,6 +273,40 @@ void test("CLI completes candidate -> topic -> model workflow -> Postiz draft ->
   );
   assert.equal(modelCalls, 0);
   await run(["work", "--once"]);
+  const [pending] = JSON.parse((await run(["topics"])).stdout);
+  assert.equal(pending.status, "awaiting_approval");
+  assert.deepEqual(JSON.parse((await run(["show"])).stdout), []);
+  assert.equal(modelCalls, 1, "Selection is allowed before approval");
+  assert.equal(postCalls, 0);
+  const beforeApproval = new DatabaseSync(join(directory, "jobs.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    assert.equal(
+      beforeApproval
+        .prepare("SELECT COUNT(*) AS n FROM generation_attempts")
+        .get()?.n,
+      0,
+    );
+    assert.equal(
+      beforeApproval
+        .prepare("SELECT COUNT(*) AS n FROM writing_model_calls")
+        .get()?.n,
+      0,
+    );
+  } finally {
+    beforeApproval.close();
+  }
+  await run([
+    "review-topic",
+    "--id",
+    pending.id,
+    "--decision",
+    "approve",
+    "--reason",
+    "Reviewed source evidence",
+  ]);
+  await run(["work", "--once"]);
   const jobs = JSON.parse((await run(["show"])).stdout);
   assert.equal(jobs.length, 1);
   const stored = JSON.parse((await run(["show", "--id", jobs[0].id])).stdout);

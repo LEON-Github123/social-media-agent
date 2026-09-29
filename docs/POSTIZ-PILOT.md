@@ -1,8 +1,8 @@
 # 独立 Linux 部署、真实服务联调与 7 天试运行
 
-本文件是待执行的操作方案和记录模板，不是上线成功记录。当前不包含已购买的云主机、已配置的 HTTPS 域名、真实服务密钥或 7 天运行数据。GitHub CI 的临时容器测试不能替代这些验收。
+本文件是独立 Linux 主机的操作方案和试运行记录模板，不是上线成功记录，也不包含真实服务密钥或 7 天运行数据。GitHub CI 的临时容器测试不能替代这些验收。现有 Railway 部署的使用方式见[工作台指南](POSTIZ-WORKBENCH.md)。
 
-本轮使用现有 Linux + Docker Compose 方案。业务代码只维护本 SMA Fork；Postiz 使用固定官方镜像和官方 Compose，不另建 Postiz Fork，也不改造为 Railway 部署。
+以下主机步骤使用 Linux + Docker Compose。业务代码只维护本 SMA Fork；Postiz 使用固定官方镜像和官方 Compose，不另建 Postiz Fork。Railway 用户沿用工作台指南中的容器与持久卷配置。
 
 ## 1. 上线前填写环境记录
 
@@ -81,10 +81,13 @@ bash deploy/postiz/compose.sh run --rm content-worker integrations
 bash deploy/postiz/compose.sh run --rm content-worker enqueue --input-json /app/content/input.json
 bash deploy/postiz/compose.sh run --rm content-worker candidates
 bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
+bash deploy/postiz/compose.sh run --rm content-worker topics
+bash deploy/postiz/compose.sh run --rm content-worker review-topic --id TOPIC_ID --decision approve --reason "实际审核依据"
+bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
 bash deploy/postiz/compose.sh run --rm content-worker show --id JOB_ID
 ```
 
-`enqueue` 返回的是候选信息；把 `JOB_ID` 替换为 `work` 选择候选并生成后返回的任务 ID。候选尚待复核、被拒绝或当天额度已满时，不应假定已经生成任务。逐项检查来源归因、事件日期、品牌相关性、证据支持、语言和 X 长度；不能把“模型复审通过”当成独立事实核查。确认合格后再提交草稿：
+`enqueue` 返回的是候选信息。首次 `work` 只会把入选题保留为待审批；先用 `topics` 查看，再通过工作台或 `review-topic --id TOPIC_ID --decision approve --reason "实际审核依据"` 批准，下一次 `work` 才能生成。把 `JOB_ID` 替换为生成后返回的任务 ID。候选尚待复核、未获批准、被拒绝或当天额度已满时，不应假定已经生成任务。逐项检查来源归因、事件日期、品牌相关性、证据支持、语言和 X 长度；不能把“模型复审通过”当成独立事实核查。确认合格后再提交草稿：
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker submit --id JOB_ID

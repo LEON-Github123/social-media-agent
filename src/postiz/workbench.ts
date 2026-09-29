@@ -187,6 +187,7 @@ export class Workbench {
     return {
       brand: brand ? { id: brand.id, name: brand.name } : null,
       readiness: this.readiness(),
+      policy: { topicApprovalRequired: true },
       runtime: { ...this.runtime },
       quota,
       report,
@@ -406,6 +407,23 @@ export class Workbench {
         ...(typeof body.mergeWith === "string"
           ? { mergeWith: body.mergeWith }
           : {}),
+      });
+    }
+    const legacyJob = /^\/api\/jobs\/([^/]+)\/review$/.exec(path);
+    if (legacyJob) {
+      const brand = this.requireReady();
+      if (
+        !validReason(body.reason) ||
+        !["approve", "reject"].includes(String(body.decision)) ||
+        (body.convertToDraft !== undefined &&
+          typeof body.convertToDraft !== "boolean")
+      )
+        throw new HttpError(400, "Decision and reason are required");
+      return this.store.reviewLegacyJob(decodeURIComponent(legacyJob[1]), {
+        brandId: brand.id,
+        decision: body.decision as "approve" | "reject",
+        reason: body.reason as string,
+        ...(body.convertToDraft === true ? { convertToDraft: true } : {}),
       });
     }
     const candidate = /^\/api\/candidates\/([^/]+)\/retry$/.exec(path);

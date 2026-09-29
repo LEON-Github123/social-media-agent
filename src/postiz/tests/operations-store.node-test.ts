@@ -52,6 +52,8 @@ const brand = {
   language: "English",
 };
 function job(id: string, url = `https://example.com/${id}`): EnqueueContentJob {
+  const sourceId =
+    new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? id;
   return {
     id,
     brandId: brand.id,
@@ -59,7 +61,14 @@ function job(id: string, url = `https://example.com/${id}`): EnqueueContentJob {
     mode: "draft",
     input: {
       brand,
-      sources: [{ url }],
+      sources: [
+        {
+          url,
+          title: `SDK ${sourceId}`,
+          text: `Release ${sourceId} with documented changes.`,
+          publishedAt: "2026-09-24T10:00:00Z",
+        },
+      ],
       integrationId: "account-a",
       mediaPaths: [],
     },
@@ -123,6 +132,13 @@ function selection(
     modelCalls: 1,
     warnings: [],
   };
+}
+function approveTopic(store: ContentJobStore, id: string): void {
+  store.reviewTopic(id, {
+    brandId: brand.id,
+    decision: "approve",
+    reason: "Operator approved the selected evidence",
+  });
 }
 
 void test("three durable Shanghai writing starts include previews, failures and crash retries, then reset at midnight", (t) => {
@@ -538,6 +554,7 @@ void test("topic job binding is atomic and idempotent across connections, with f
   const b = f.open();
   const first = candidate(a, "release-a");
   a.saveSelection({ brandId: brand.id, result: selection([first], "sdk-v1") });
+  approveTopic(a, "sdk-v1");
   const created = a.enqueueForTopic(
     "sdk-v1",
     job("topic-job", first.input.url),
@@ -574,6 +591,55 @@ void test("topic job binding is atomic and idempotent across connections, with f
     b
       .listTopics({ brandId: brand.id })
       .some((topic) => topic.id === "sdk-v1" && topic.hasContent),
+  );
+});
+
+void test("approval freezes writing evidence while later sources may still join the topic", (t) => {
+  const f = fixture(t);
+  const store = f.open();
+  const first = candidate(store, "approved-source");
+  store.saveSelection({
+    brandId: brand.id,
+    result: selection([first], "approved-event"),
+  });
+  assert.equal(store.getTopic("approved-event")?.status, "awaiting_approval");
+  assert.throws(
+    () =>
+      store.enqueueForTopic("approved-event", job("early", first.input.url)),
+    JobConflictError,
+  );
+  approveTopic(store, "approved-event");
+  const later = candidate(store, "later-source");
+  const update = selection([later], "approved-event");
+  update.topics[0].sourceCandidateIds = [first.id, later.id];
+  update.topics[0].sourceMetadata = [
+    { candidateId: first.id, url: first.input.url, primary: true },
+    { candidateId: later.id, url: later.input.url, primary: true },
+  ];
+  store.saveSelection({ brandId: brand.id, result: update });
+  assert.deepEqual(store.getTopic("approved-event")?.approvedEvidenceIds, [
+    first.id,
+  ]);
+  store.recordCandidateDocument(first.id, {
+    ...first.document!,
+    text: "This later extraction changed the candidate document.",
+  });
+  assert.equal(
+    store.getTopic("approved-event")?.approvedSources?.[0].text,
+    first.document?.text,
+  );
+  assert.throws(
+    () =>
+      store.enqueueForTopic(
+        "approved-event",
+        job("unapproved", later.input.url),
+      ),
+    JobConflictError,
+  );
+  assert.equal(
+    store.enqueueForTopic("approved-event", job("approved", first.input.url))
+      .id,
+    "approved",
   );
 });
 
@@ -741,7 +807,8 @@ void test("version seven repairs already-reviewed candidates with a consistent b
       "UPDATE content_candidates SET status='needs_review',last_error='Old model concern' WHERE id IN (?,?)",
     )
     .run(approved.id, rejected.id);
-  old.prepare("DELETE FROM schema_migrations WHERE version=7").run();
+  old.prepare("DELETE FROM schema_migrations WHERE version IN (7,8)").run();
+  old.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
   old.close();
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);
@@ -829,6 +896,7 @@ void test("a pending identity collision stays separate; explicit merge waits for
     brandId: brand.id,
     result: selection([first], "canonical-event"),
   });
+  approveTopic(store, "canonical-event");
   store.enqueueForTopic(
     "canonical-event",
     job("canonical-job", first.input.url),
@@ -921,6 +989,7 @@ void test("recorded historical conflict IDs also block approvals when a model pr
     brandId: brand.id,
     result: selection([original], "real-event"),
   });
+  approveTopic(store, "real-event");
   const originalJob = store.enqueueForTopic(
     "real-event",
     job("real-job", original.input.url),
@@ -1017,6 +1086,7 @@ void test("generation starts with the highest persisted topic score even when a 
     selected.candidateDecisions[0].totalScore = score;
     selected.topics[0].sourceMetadata[0].totalScore = score;
     store.saveSelection({ brandId: brand.id, result: selected });
+    approveTopic(store, `topic-${id}`);
     store.enqueueForTopic(`topic-${id}`, job(`job-${id}`, item.input.url));
     f.advance(1);
   }
@@ -1081,10 +1151,9 @@ void test("approval rechecks durable source conflicts when two old proposals use
     decision: "approve",
     reason: "Verified the first account",
   });
-  store.enqueueForTopic(
-    "old-review-a",
-    job("shared-event-job", items[0].input.url),
-  );
+  const bound = job("shared-event-job", items[0].input.url);
+  (bound.input as { sources: unknown[] }).sources = [items[0].document];
+  store.enqueueForTopic("old-review-a", bound);
   const writing = store.claimGeneration({ workerId: "writer", leaseMs: 100 });
   assert.ok(writing);
   store.completeGeneration(writing.id, writing.leaseToken, {

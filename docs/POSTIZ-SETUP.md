@@ -162,13 +162,24 @@ bash deploy/postiz/compose.sh run --rm content-worker preview --input-json /app/
 `enqueue` 先持久化候选，不立即创建内容任务或调用模型/Postiz，但入队前必须填写
 `POSTIZ_INTEGRATION_ID`。这个目标账号标识不是 API 密钥；真实账号归属按前面的
 `integrations` 步骤核对。候选 ID 与后续内容任务 ID 是不同对象。让 worker 选择候选，
-先只生成并保存本地结果：
+先筛选并等待人工批准：
 
 ```bash
 bash deploy/postiz/compose.sh run --rm content-worker enqueue --input-json /app/content/input.json
 bash deploy/postiz/compose.sh run --rm content-worker candidates
 bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
+bash deploy/postiz/compose.sh run --rm content-worker topics
 ```
+
+查看选题来源和判断后，将 `TOPIC_ID` 替换为要采用的真实选题，再批准并生成：
+
+```bash
+bash deploy/postiz/compose.sh run --rm content-worker review-topic --id TOPIC_ID --decision approve --reason "已核对来源，批准写作"
+bash deploy/postiz/compose.sh run --rm content-worker work --once --no-submit
+```
+
+所有入选题都需要人工批准，包括模型评分合格的题目。工作台的“批准写作”
+执行同一操作；持续运行时批准后由后台自动继续，不必手动再执行一次 `work`。
 
 也可传入一个可抓取的网页 URL：
 
@@ -202,7 +213,7 @@ bash deploy/postiz/compose.sh run --rm content-worker sync --id JOB_ID
 
 ### 候选与选题复核
 
-手动导入和订阅发现都先进入持久化候选，再经过选题选择、合并和每日额度控制。
+手动导入和订阅发现都先进入持久化候选，再经过选题选择、合并、人工批准和每日额度控制。
 `candidates` 查看候选，`topics` 查看选题；这些 ID 与 `show --id` 接收的内容任务 ID
 不同。等待复核的候选或选题不会因重复执行 `work` 就自动变成已批准内容。
 

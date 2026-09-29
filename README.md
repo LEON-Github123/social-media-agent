@@ -2,8 +2,9 @@
 
 This fork adds a standalone worker for Tokenhot's X account: configured sources and
 manual materials enter a persistent candidate pool, related announcements are
-grouped, and selected topics become checked English single-post drafts in official
-self-hosted Postiz. Review, edit, discard and schedule those drafts in Postiz.
+grouped, and human-approved topics become checked English single-post drafts in
+official self-hosted Postiz. Approve material in the Tokenhot workbench, then
+review, edit, discard and schedule the resulting drafts in Postiz.
 Worker scheduling is disabled by default, including for historical scheduled jobs.
 
 Writing starts are limited to three per day by default in `Asia/Shanghai`, including
@@ -19,6 +20,7 @@ upstream Agent Server development workflow described below.
 - [Linux deployment and seven-day pilot (中文)](docs/POSTIZ-PILOT.md)
 - [Pinned Postiz deployment sources](deploy/postiz/UPSTREAM.md)
 - [Brand configuration example](config/postiz/brand.example.json)
+- [Official sources and daily material approval (中文)](docs/POSTIZ-SOURCES.md)
 
 The worker needs Node.js 24+. It does not require Arcade, an Agent Server license,
 or Slack. Model and social platform credentials are configured at runtime.

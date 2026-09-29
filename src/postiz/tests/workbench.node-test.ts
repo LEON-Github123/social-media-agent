@@ -322,6 +322,21 @@ void test("pause persists across restart and a real tick creates one draft then 
     model: () => model,
     client: () => client,
   });
+  assert.equal(store.list({ brandId: brand.id, limit: 10 }).length, 0);
+  const [pending] = store.listTopics({ brandId: brand.id });
+  assert.equal(pending.status, "awaiting_approval");
+  assert.equal(creates, 0);
+  await workbench.mutate(`/api/topics/${pending.id}/review`, {
+    decision: "approve",
+    reason: "Evidence checked",
+  });
+  await runWorkbenchTick({
+    store,
+    config,
+    brand,
+    model: () => model,
+    client: () => client,
+  });
   const jobs = store.list({ brandId: brand.id, limit: 10 });
   assert.equal(
     jobs.length,

@@ -295,6 +295,11 @@ void test("upgrading version three preserves prior jobs and daily reservations i
   previous.exec(
     "DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations; DROP TABLE content_feedback; DROP TABLE postiz_observations; DROP TABLE writing_model_calls; DELETE FROM schema_migrations WHERE version>=4;",
   );
+  previous.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
+  previous.exec("ALTER TABLE content_topics DROP COLUMN approved_sources_json");
+  previous.exec(
+    "ALTER TABLE content_topics DROP COLUMN approved_evidence_ids_json",
+  );
   previous.close();
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);

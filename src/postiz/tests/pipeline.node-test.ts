@@ -86,7 +86,17 @@ void test("same announcement across batches stays one job after an unknown submi
     now,
   };
   const first = await selectAndQueue(options);
-  assert.equal(first.queued, 1);
+  assert.equal(first.queued, 0);
+  const pending = store
+    .listTopics({ brandId: brand.id })
+    .find((topic) => topic.identity.version === "1.10")!;
+  assert.equal(pending.status, "awaiting_approval");
+  store.reviewTopic(pending.id, {
+    brandId: brand.id,
+    decision: "approve",
+    reason: "Approved sources",
+  });
+  assert.equal((await selectAndQueue(options)).queued, 1);
   const [job] = store.list();
   const source = material("1.10");
   await generateNext({
@@ -126,6 +136,15 @@ void test("same announcement across batches stays one job after an unknown submi
     brandId: brand.id,
     origin: "rss",
     inputs: [material("1.10", "late-reporter.example.com"), material("1.11")],
+  });
+  assert.equal((await selectAndQueue(options)).queued, 0);
+  const next = store
+    .listTopics({ brandId: brand.id })
+    .find((topic) => topic.identity.version === "1.11")!;
+  store.reviewTopic(next.id, {
+    brandId: brand.id,
+    decision: "approve",
+    reason: "Approved sources",
   });
   assert.equal((await selectAndQueue(options)).queued, 1);
   assert.equal(store.list().length, 2);

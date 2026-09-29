@@ -265,6 +265,57 @@ const migrations: readonly Migration[] = [
         );
     `,
   },
+  {
+    version: 8,
+    name: "writing_approval",
+    sql: `
+      CREATE TABLE content_topics_v8 (
+        id TEXT PRIMARY KEY,
+        brand_id TEXT NOT NULL,
+        identity_key TEXT NOT NULL,
+        identity_json TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('awaiting_approval','ready','needs_review','rejected','existing')),
+        reason TEXT NOT NULL,
+        source_candidate_ids_json TEXT NOT NULL,
+        source_metadata_json TEXT NOT NULL,
+        proposed_identity_key TEXT,
+        conflicting_topic_ids_json TEXT NOT NULL DEFAULT '[]',
+        merged_into_topic_id TEXT,
+        job_id TEXT UNIQUE,
+        approved_evidence_ids_json TEXT,
+        approved_sources_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (brand_id, identity_key)
+      );
+      INSERT INTO content_topics_v8
+        (id,brand_id,identity_key,identity_json,title,status,reason,source_candidate_ids_json,
+         source_metadata_json,proposed_identity_key,conflicting_topic_ids_json,merged_into_topic_id,
+         job_id,approved_evidence_ids_json,approved_sources_json,created_at,updated_at)
+      SELECT id,brand_id,identity_key,identity_json,title,
+        CASE WHEN status='ready' AND job_id IS NULL THEN 'awaiting_approval' ELSE status END,
+        reason,source_candidate_ids_json,source_metadata_json,proposed_identity_key,
+        conflicting_topic_ids_json,merged_into_topic_id,job_id,
+        CASE WHEN job_id IS NOT NULL THEN source_candidate_ids_json ELSE NULL END,NULL,
+        created_at,updated_at FROM content_topics;
+      DROP TABLE content_topics;
+      ALTER TABLE content_topics_v8 RENAME TO content_topics;
+      CREATE INDEX content_topics_brand ON content_topics (brand_id, created_at, id);
+      ALTER TABLE postiz_content_jobs ADD COLUMN writing_approved INTEGER NOT NULL DEFAULT 1;
+      UPDATE postiz_content_jobs SET writing_approved=0
+      WHERE state IN ('queued','processing','ready','failed','rejected')
+        AND postiz_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM content_topics AS topic
+          JOIN audit_events AS event ON event.brand_id=topic.brand_id
+          WHERE topic.job_id=postiz_content_jobs.id
+            AND event.event_type='topic.reviewed'
+            AND json_extract(event.after_json,'$.id')=topic.id
+            AND json_extract(event.after_json,'$.status')='ready'
+        );
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

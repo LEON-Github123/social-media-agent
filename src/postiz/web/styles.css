@@ -280,6 +280,13 @@ main {
   color: var(--muted);
   line-height: 1.4;
 }
+.metric-link {
+  width: fit-content;
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
 .quota-track {
   display: block;
   width: 100%;
@@ -529,6 +536,39 @@ code {
 }
 .source-links a {
   font-size: 0.78rem;
+}
+.topic-sources {
+  display: grid;
+  gap: 9px;
+  margin-top: 15px;
+}
+.topic-sources > small {
+  font-weight: 700;
+}
+.topic-source {
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.topic-source .item-meta {
+  margin: 5px 0 0;
+}
+.source-excerpt {
+  color: #d0d8e8;
+  font-size: 0.8rem;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+.topic-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.topic-actions .action-form {
+  margin: 0;
 }
 .empty {
   min-height: 155px;

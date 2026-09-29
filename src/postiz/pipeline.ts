@@ -82,14 +82,7 @@ export async function selectAndQueue(options: {
     for (const topic of store
       .listTopics({ brandId: brand.id })
       .filter((topic) => topic.status === "ready" && !topic.hasContent)) {
-      const evidence = topic.sourceCandidateIds.map((id) => {
-        const candidate = store.getCandidate(id);
-        if (!candidate || candidate.brandId !== brand.id || !candidate.document)
-          throw new Error(
-            "A selected topic is missing its persisted source document",
-          );
-        return candidate.document;
-      });
+      const evidence = topic.approvedSources ?? [];
       let characters = 0;
       const sources = evidence.filter((source) => {
         if (characters + source.text.length > 180_000) return false;

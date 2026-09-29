@@ -364,6 +364,33 @@ void test("Atom links and content are normalized; malformed or entity-bearing fe
   }
 });
 
+void test("article HTML doctypes inside RSS CDATA do not hide real XML declarations", async () => {
+  const source = { type: "rss" as const, url: "https://example.com/feed" };
+  const rss = `<rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+    <!-- A literal <!DOCTYPE rss> example in a comment is not a declaration. -->
+    <item><title>API guide</title><link>https://example.com/guide</link>
+      <content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd"><html><body><p>Use the documented API option.</p></body></html>]]></content:encoded>
+    </item></channel></rss>`;
+  const options = { lookup, fetch: mockFetch(() => new Response(rss)) };
+  const values = await discoverSources([source], options);
+  assert.equal(values.length, 1);
+  assert.equal(values[0].text, "Use the documented API option.");
+  for (const declaration of [
+    '<!DOCTYPE rss [<!ENTITY external SYSTEM "https://example.com/entity">]>',
+    '<!ENTITY external SYSTEM "file:///etc/passwd">',
+  ]) {
+    await assert.rejects(
+      discoverSources([source], {
+        lookup,
+        fetch: mockFetch(
+          () => new Response(`<!-- comment -->${declaration}${rss}`),
+        ),
+      }),
+      /DTD or entity declarations/,
+    );
+  }
+});
+
 void test("JSON file sources use the configured directory and enforce structure and size", async () => {
   const directory = await mkdtemp(join(tmpdir(), "postiz-sources-"));
   try {

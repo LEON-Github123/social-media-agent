@@ -58,6 +58,7 @@ export interface ContentJob {
   leaseOwner: string | null;
   leaseExpiresAt: number | null;
   attemptCount: number;
+  writingApproved: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -335,6 +336,7 @@ export class ContentJobStore extends ContentFeedbackStore {
       leaseExpiresAt:
         row.lease_expires_at === null ? null : Number(row.lease_expires_at),
       attemptCount: Number(row.attempt_count),
+      writingApproved: row.writing_approved === 1,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -541,6 +543,63 @@ export class ContentJobStore extends ContentFeedbackStore {
     });
   }
 
+  /** Review a pre-upgrade, unsubmitted job that has no topic approval. */
+  reviewLegacyJob(
+    id: string,
+    options: {
+      brandId: string;
+      decision: "approve" | "reject";
+      reason: string;
+      actor?: string;
+      convertToDraft?: boolean;
+    },
+  ): ContentJob {
+    requiredText(options.reason, "reason");
+    if (!["approve", "reject"].includes(options.decision))
+      throw new TypeError("Invalid job review decision");
+    return this.transaction(() => {
+      const before = this.get(id);
+      if (
+        !before ||
+        before.brandId !== options.brandId ||
+        before.writingApproved ||
+        !["queued", "ready", "failed"].includes(before.state) ||
+        before.postizId ||
+        before.leaseToken
+      )
+        throw new JobConflictError(
+          "Only an idle, unapproved legacy job can be reviewed",
+        );
+      if (
+        options.decision === "approve" &&
+        before.mode === "schedule" &&
+        options.convertToDraft !== true
+      )
+        throw new JobConflictError(
+          "Approving a scheduled legacy job requires explicit conversion to a draft",
+        );
+      this.db
+        .prepare(
+          "UPDATE postiz_content_jobs SET writing_approved=?,state=CASE WHEN ?='reject' THEN 'rejected' ELSE state END,mode=CASE WHEN ?=1 THEN 'draft' ELSE mode END,scheduled_at=CASE WHEN ?=1 THEN NULL ELSE scheduled_at END,updated_at=? WHERE id=? AND writing_approved=0",
+        )
+        .run(
+          options.decision === "approve" ? 1 : 0,
+          options.decision,
+          options.decision === "approve" && options.convertToDraft === true
+            ? 1
+            : 0,
+          options.decision === "approve" && options.convertToDraft === true
+            ? 1
+            : 0,
+          this.now(),
+          id,
+        );
+      const after = this.requireJob(id);
+      this.auditJob("job.reviewed", before, after, options);
+      return after;
+    });
+  }
+
   private leaseDuration(leaseMs: number): number {
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) {
       throw new TypeError("leaseMs must be a positive integer");
@@ -556,7 +615,7 @@ export class ContentJobStore extends ContentFeedbackStore {
     requiredText(options.workerId, "workerId");
     this.leaseDuration(options.leaseMs);
     return this.transaction(() => {
-      const filters = ["state = ?"];
+      const filters = ["state = ?", "writing_approved = 1"];
       const values: BindValue[] = [from];
       if (options.jobId !== undefined) {
         filters.push("id = ?");
