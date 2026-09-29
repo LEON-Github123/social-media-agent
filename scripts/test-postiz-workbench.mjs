@@ -28,7 +28,7 @@ try {
     const cleanEnv = Object.fromEntries(
       Object.entries(process.env).filter(
         ([key]) =>
-          !/^(CONTENT_|POSTIZ_|OPENAI_|ANTHROPIC_|LANGCHAIN_|LANGSMITH_|FIRECRAWL_|GETXAPI_)/.test(
+          !/^(CONTENT_|POSTIZ_|OPENAI_|ANTHROPIC_|LANGCHAIN_|LANGSMITH_|FIRECRAWL_|GETXAPI_|TWITTERAPI_IO_)/.test(
             key,
           ),
       ),
@@ -42,6 +42,8 @@ try {
           CONTENT_ENV_FILE: join(directory, "missing.env"),
           CONTENT_DB_PATH: join(directory, "content.sqlite"),
           CONTENT_BRAND_FILE: "config/postiz/brand.example.json",
+          CONTENT_SOURCES_FILE:
+            "config/postiz/sources.tokenhot-competitors.json",
           CONTENT_WORKBENCH_PASSWORD: password,
           CONTENT_WORKBENCH_URL: origin,
           CONTENT_AUTO_SUBMIT: "false",

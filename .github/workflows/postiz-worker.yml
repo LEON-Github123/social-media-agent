@@ -99,6 +99,7 @@ jobs:
             --publish 127.0.0.1:18080:8080 \
             --mount type=volume,source=postiz-workbench-ci-data,target=/data,volume-nocopy \
             --env CONTENT_DB_PATH=/data/worker/workbench-ci.sqlite \
+            --env CONTENT_SOURCES_FILE=/app/config/postiz/sources.tokenhot-competitors.json \
             --env CONTENT_WORKBENCH_PASSWORD="$WORKBENCH_TEST_PASSWORD" \
             --env CONTENT_WORKBENCH_URL=http://127.0.0.1:18080 \
             --env PORT=8080 --env CONTENT_AUTO_SUBMIT=false \

@@ -22,7 +22,7 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/dist-postiz ./dist-postiz
 COPY package.json ./
 COPY scripts/start-postiz-railway.mjs ./scripts/start-postiz-railway.mjs
-COPY config/postiz/brand.example.json config/postiz/sources.example.json config/postiz/sources.tokenhot.json ./config/postiz/
+COPY config/postiz/brand.example.json config/postiz/sources.example.json config/postiz/sources.tokenhot.json config/postiz/sources.tokenhot-competitors.json ./config/postiz/
 # Docker initializes a new named volume from this node-owned directory.
 RUN mkdir -p /app/content /data && touch /data/.initialized && chown -R node:node /data
 USER node
