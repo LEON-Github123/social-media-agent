@@ -28,6 +28,7 @@ export interface WorkerConfig {
   source: {
     firecrawlApiKey?: string;
     getxApiKey?: string;
+    twitterApiIoApiKey?: string;
     maxChars: number;
     timeoutMs: number;
   };
@@ -108,6 +109,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     source: {
       firecrawlApiKey: env.FIRECRAWL_API_KEY || undefined,
       getxApiKey: env.GETXAPI_TOKEN || undefined,
+      twitterApiIoApiKey: env.TWITTERAPI_IO_API_KEY || undefined,
       maxChars: positiveInt(
         env,
         "CONTENT_SOURCE_MAX_CHARS",

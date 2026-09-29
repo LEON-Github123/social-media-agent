@@ -41,6 +41,21 @@ export type SourceConfig = (
       minLikes?: number;
       maxAgeHours?: number;
     }
+  | {
+      type: "twitterapi-search";
+      query: string;
+      queryType?: "Latest" | "Top";
+      maxPages?: number;
+      minLikes?: number;
+      maxAgeHours?: number;
+    }
+  | {
+      type: "twitterapi-user";
+      userName: string;
+      maxPages?: number;
+      minLikes?: number;
+      maxAgeHours?: number;
+    }
 ) & {
   limit?: number;
   /** Stable configured name; otherwise the collector derives it from identity. */
@@ -59,7 +74,7 @@ export type SourceReadCheckpoint = {
 } & (
   | { kind: "snapshot" }
   | {
-      kind: "getx";
+      kind: "getx" | "twitterapi";
       nextCursor: string | null;
       pagesRead: number;
       remainingItems: number;
@@ -82,6 +97,7 @@ export interface SourceOptions extends PublicNetworkOptions {
   getxApiKey?: string;
   getxApiToken?: string;
   getxApiBaseUrl?: string;
+  twitterApiIoApiKey?: string;
   maxItems?: number;
   maxItemsPerSource?: number;
   maxPages?: number;
@@ -438,6 +454,65 @@ type GetxSourceConfig = Extract<
   SourceConfig,
   { type: "getx-search" | "getx-user" }
 >;
+type TwitterApiSourceConfig = Extract<
+  SourceConfig,
+  { type: "twitterapi-search" | "twitterapi-user" }
+>;
+type XSourceConfig = GetxSourceConfig | TwitterApiSourceConfig;
+
+function tweetInputs(
+  tweets: unknown[],
+  config: XSourceConfig,
+  maxChars: number,
+  now: Date,
+): SourceInput[] {
+  const inputs: SourceInput[] = [];
+  const seenIds = new Set<string>();
+  for (const value of tweets) {
+    if (!value || typeof value !== "object") continue;
+    const tweet = value as Record<string, unknown>;
+    if (
+      typeof tweet.id !== "string" ||
+      !/^\d{1,30}$/.test(tweet.id) ||
+      typeof tweet.text !== "string" ||
+      !tweet.text.trim() ||
+      seenIds.has(tweet.id)
+    )
+      continue;
+    seenIds.add(tweet.id);
+    if (
+      config.minLikes !== undefined &&
+      (typeof tweet.likeCount !== "number" || tweet.likeCount < config.minLikes)
+    )
+      continue;
+    const publishedAt = normalizedDate(tweet.createdAt);
+    if (!recentEnough(publishedAt, config.maxAgeHours, now)) continue;
+    const author =
+      tweet.author && typeof tweet.author === "object"
+        ? (tweet.author as Record<string, unknown>).userName
+        : undefined;
+    const userName =
+      typeof author === "string" && /^[A-Za-z0-9_]{1,15}$/.test(author)
+        ? author
+        : "i";
+    inputs.push({
+      url: `https://x.com/${userName}/status/${tweet.id}`,
+      text: textContent(tweet.text).slice(0, maxChars),
+      ...(userName !== "i" ? { title: `@${userName} on X` } : {}),
+      ...(publishedAt ? { publishedAt } : {}),
+    });
+  }
+  return inputs;
+}
+
+function validateXFilters(config: XSourceConfig): void {
+  validAge(config.maxAgeHours);
+  if (
+    config.minLikes !== undefined &&
+    (!Number.isInteger(config.minLikes) || config.minLikes < 0)
+  )
+    throw new Error("minLikes must be a nonnegative integer");
+}
 
 async function getxPage(
   config: GetxSourceConfig,
@@ -450,12 +525,7 @@ async function getxPage(
     options.getxApiKey ?? options.getxApiToken,
     "GetXAPI token",
   );
-  validAge(config.maxAgeHours);
-  if (
-    config.minLikes !== undefined &&
-    (!Number.isInteger(config.minLikes) || config.minLikes < 0)
-  )
-    throw new Error("minLikes must be a nonnegative integer");
+  validateXFilters(config);
   const base = httpsApiBase(
     options.getxApiBaseUrl ?? "https://api.getxapi.com",
   );
@@ -502,42 +572,7 @@ async function getxPage(
   // a provider unexpectedly changes its contract, rather than silently losing it.
   if (payload.tweets.length > 100)
     throw new Error("GetXAPI page exceeds 100 tweets");
-  const inputs: SourceInput[] = [];
-  const seenIds = new Set<string>();
-  for (const value of payload.tweets) {
-    if (!value || typeof value !== "object") continue;
-    const tweet = value as Record<string, unknown>;
-    if (
-      typeof tweet.id !== "string" ||
-      !/^\d{1,30}$/.test(tweet.id) ||
-      typeof tweet.text !== "string" ||
-      !tweet.text.trim() ||
-      seenIds.has(tweet.id)
-    )
-      continue;
-    seenIds.add(tweet.id);
-    if (
-      config.minLikes !== undefined &&
-      (typeof tweet.likeCount !== "number" || tweet.likeCount < config.minLikes)
-    )
-      continue;
-    const publishedAt = normalizedDate(tweet.createdAt);
-    if (!recentEnough(publishedAt, config.maxAgeHours, now)) continue;
-    const author =
-      tweet.author && typeof tweet.author === "object"
-        ? (tweet.author as Record<string, unknown>).userName
-        : undefined;
-    const userName =
-      typeof author === "string" && /^[A-Za-z0-9_]{1,15}$/.test(author)
-        ? author
-        : "i";
-    inputs.push({
-      url: `https://x.com/${userName}/status/${tweet.id}`,
-      text: textContent(tweet.text).slice(0, maxChars),
-      ...(userName !== "i" ? { title: `@${userName} on X` } : {}),
-      ...(publishedAt ? { publishedAt } : {}),
-    });
-  }
+  const inputs = tweetInputs(payload.tweets, config, maxChars, now);
   const nextCursor =
     payload.has_more && payload.tweets.length
       ? nonempty(payload.next_cursor, "GetXAPI next_cursor")
@@ -545,6 +580,74 @@ async function getxPage(
   if (nextCursor && nextCursor.length > 8_192)
     throw new Error("GetXAPI cursor exceeds length limit");
   return { inputs, nextCursor };
+}
+
+async function twitterApiPage(
+  config: TwitterApiSourceConfig,
+  options: SourceOptions,
+  maxChars: number,
+  now: Date,
+  cursor: string | null,
+): Promise<{ inputs: SourceInput[]; nextCursor: string | null }> {
+  const key = nonempty(options.twitterApiIoApiKey, "TwitterAPI.io API key");
+  validateXFilters(config);
+  const url = new URL(
+    config.type === "twitterapi-search"
+      ? "/twitter/tweet/advanced_search"
+      : "/twitter/user/last_tweets",
+    "https://api.twitterapi.io",
+  );
+  if (config.type === "twitterapi-search") {
+    const queryType = config.queryType ?? "Latest";
+    if (queryType !== "Latest" && queryType !== "Top")
+      throw new Error("TwitterAPI.io queryType must be Latest or Top");
+    const query = nonempty(config.query, "TwitterAPI.io query");
+    if (query.length > 4_000)
+      throw new Error("TwitterAPI.io query exceeds 4000 characters");
+    url.searchParams.set("query", query);
+    url.searchParams.set("queryType", queryType);
+  } else {
+    const userName = nonempty(
+      config.userName,
+      "TwitterAPI.io userName",
+    ).replace(/^@/, "");
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(userName))
+      throw new Error("TwitterAPI.io userName is invalid");
+    url.searchParams.set("userName", userName);
+    url.searchParams.set("includeReplies", "false");
+  }
+  if (cursor) url.searchParams.set("cursor", cursor);
+  const response = await fetchPublicText(url.href, {
+    ...options,
+    headers: { "X-API-Key": key, accept: "application/json" },
+    maxRedirects: 0,
+  });
+  if (response.status < 200 || response.status >= 300)
+    throw new Error(
+      `TwitterAPI.io request failed with HTTP ${response.status}`,
+    );
+  const payload = jsonObject(response.text, "TwitterAPI.io");
+  const data = configRecord(payload.data);
+  const tweets = payload.tweets ?? data?.tweets;
+  if (
+    !Array.isArray(tweets) ||
+    typeof payload.has_next_page !== "boolean" ||
+    payload.error ||
+    (payload.status !== undefined && payload.status !== "success") ||
+    (payload.code !== undefined && payload.code !== 0)
+  )
+    throw new Error("TwitterAPI.io returned an invalid tweets page");
+  if (tweets.length > 100)
+    throw new Error("TwitterAPI.io page exceeds 100 tweets");
+  const nextCursor = payload.has_next_page
+    ? nonempty(payload.next_cursor, "TwitterAPI.io next_cursor")
+    : null;
+  if (nextCursor && nextCursor.length > 8_192)
+    throw new Error("TwitterAPI.io cursor exceeds length limit");
+  return {
+    inputs: tweetInputs(tweets, config, maxChars, now),
+    nextCursor: tweets.length ? nextCursor : null,
+  };
 }
 
 function configRecord(value: unknown): Record<string, unknown> | null {
@@ -617,6 +720,16 @@ export function assertSourceConfig(
         throw new Error("GetXAPI query exceeds 4000 characters");
       }
       break;
+    case "twitterapi-search":
+      if (nonempty(config.query, "TwitterAPI.io query").length > 4_000)
+        throw new Error("TwitterAPI.io query exceeds 4000 characters");
+      if (
+        config.queryType !== undefined &&
+        config.queryType !== "Latest" &&
+        config.queryType !== "Top"
+      )
+        throw new Error("TwitterAPI.io queryType must be Latest or Top");
+      break;
     case "getx-user":
       if (
         !/^[A-Za-z0-9_]{1,15}$/.test(
@@ -626,9 +739,17 @@ export function assertSourceConfig(
         throw new Error("GetXAPI userName is invalid");
       }
       break;
+    case "twitterapi-user":
+      if (
+        !/^[A-Za-z0-9_]{1,15}$/.test(
+          nonempty(config.userName, "TwitterAPI.io userName").replace(/^@/, ""),
+        )
+      )
+        throw new Error("TwitterAPI.io userName is invalid");
+      break;
     default:
       throw new Error(
-        "Source type must be url, rss, json-file, getx-search or getx-user",
+        "Source type must be url, rss, json-file, getx-search, getx-user, twitterapi-search or twitterapi-user",
       );
   }
 }
@@ -669,11 +790,18 @@ export function sourceIdentity(
       locator = resolve(options.baseDir ?? process.cwd(), config.path);
       break;
     case "getx-user":
+    case "twitterapi-user":
       if (typeof config.userName !== "string") return invalid();
       locator = config.userName.replace(/^@/, "").toLowerCase();
       break;
     case "getx-search":
       locator = { query: config.query, product: config.product ?? "Latest" };
+      break;
+    case "twitterapi-search":
+      locator = {
+        query: config.query,
+        queryType: config.queryType ?? "Latest",
+      };
       break;
     default:
       return invalid();
@@ -709,6 +837,10 @@ export function sourceReadKey(
                 options.getxApiBaseUrl ?? "https://api.getxapi.com",
             }
           : {}),
+        ...(typeof config.type === "string" &&
+        config.type.startsWith("twitterapi-")
+          ? { twitterApiIoBaseUrl: "https://api.twitterapi.io" }
+          : {}),
       }),
     )
     .digest("hex");
@@ -736,7 +868,7 @@ function readCheckpoint(
   if (record.kind === "snapshot")
     return { version: 1, sourceKey, kind: "snapshot", pending };
   if (
-    record.kind !== "getx" ||
+    (record.kind !== "getx" && record.kind !== "twitterapi") ||
     !Number.isInteger(record.pagesRead) ||
     Number(record.pagesRead) < 1 ||
     Number(record.pagesRead) > 5 ||
@@ -766,7 +898,7 @@ function readCheckpoint(
   return {
     version: 1,
     sourceKey,
-    kind: "getx",
+    kind: record.kind,
     pending,
     nextCursor: record.nextCursor as string | null,
     pagesRead: Number(record.pagesRead),
@@ -777,7 +909,7 @@ function readCheckpoint(
 }
 
 /**
- * A source check performs at most one GetX call or one feed/file read. Remaining
+ * A source check performs at most one paid X call or one feed/file read. Remaining
  * items are stored in the checkpoint, so a small fair share never loses the rest
  * of a paid page or causes the next worker to download the same snapshot again.
  */
@@ -807,13 +939,19 @@ export async function discoverSourceBatch(
   const now = options.now?.() ?? new Date();
   if (!Number.isFinite(now.getTime()))
     throw new Error("Discovery clock must return a valid Date");
-  if (config.type === "getx-search" || config.type === "getx-user") {
+  if (
+    config.type === "getx-search" ||
+    config.type === "getx-user" ||
+    config.type === "twitterapi-search" ||
+    config.type === "twitterapi-user"
+  ) {
+    const kind = config.type.startsWith("getx-") ? "getx" : "twitterapi";
     const pageLimit = Math.min(
       boundedInteger(config.maxPages, 1, 5, "maxPages"),
       boundedInteger(options.maxPages, 5, 5, "maxPages"),
     );
-    let state: Extract<SourceReadCheckpoint, { kind: "getx" }>;
-    if (checkpoint?.kind === "getx") {
+    let state: Exclude<SourceReadCheckpoint, { kind: "snapshot" }>;
+    if (checkpoint?.kind === kind) {
       state = {
         ...checkpoint,
         pending: [...checkpoint.pending],
@@ -824,7 +962,7 @@ export async function discoverSourceBatch(
       state = {
         version: 1,
         sourceKey,
-        kind: "getx",
+        kind,
         pending: [],
         nextCursor: null,
         pagesRead: 0,
@@ -839,11 +977,28 @@ export async function discoverSourceBatch(
       state.remainingItems > 0
     ) {
       const cursor = state.nextCursor;
-      const page = await getxPage(config, options, maxChars, now, cursor);
+      const page =
+        kind === "getx"
+          ? await getxPage(
+              config as GetxSourceConfig,
+              options,
+              maxChars,
+              now,
+              cursor,
+            )
+          : await twitterApiPage(
+              config as TwitterApiSourceConfig,
+              options,
+              maxChars,
+              now,
+              cursor,
+            );
       state.pagesRead += 1;
       if (cursor) state.seenCursors.push(cursor);
       if (page.nextCursor && state.seenCursors.includes(page.nextCursor))
-        throw new Error("GetXAPI repeated a pagination cursor");
+        throw new Error(
+          `${kind === "getx" ? "GetXAPI" : "TwitterAPI.io"} repeated a pagination cursor`,
+        );
       const seenIds = new Set(state.seenIds);
       state.pending = page.inputs
         .filter((input) => {
@@ -899,8 +1054,8 @@ export async function discoverSourceBatch(
   };
 }
 
-async function getxSources(
-  config: GetxSourceConfig,
+async function xSources(
+  config: XSourceConfig,
   options: SourceOptions,
   limit: number,
   maxChars: number,
@@ -972,7 +1127,9 @@ export async function discoverSources(
         break;
       case "getx-search":
       case "getx-user":
-        discovered = await getxSources(source, options, limit, maxChars, now);
+      case "twitterapi-search":
+      case "twitterapi-user":
+        discovered = await xSources(source, options, limit, maxChars, now);
         break;
       default:
         throw new Error("Unknown source type");

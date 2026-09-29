@@ -555,6 +555,237 @@ void test("GetXAPI errors and repeated cursors are surfaced instead of content",
   );
 });
 
+void test("TwitterAPI.io search uses its own key, query fields, filtering and cross-page deduplication", async () => {
+  const requests: URL[] = [];
+  const values = await discoverSources(
+    [
+      {
+        type: "twitterapi-search",
+        query: "AI API",
+        queryType: "Top",
+        maxPages: 2,
+        limit: 4,
+        minLikes: 5,
+        maxAgeHours: 24,
+      },
+    ],
+    {
+      lookup,
+      now,
+      getxApiKey: "getx-secret",
+      twitterApiIoApiKey: "twitterapi-secret",
+      fetch: mockFetch((input, init) => {
+        const url = new URL(input);
+        requests.push(url);
+        assert.equal(url.origin, "https://api.twitterapi.io");
+        assert.equal(url.pathname, "/twitter/tweet/advanced_search");
+        assert.equal(url.searchParams.get("query"), "AI API");
+        assert.equal(url.searchParams.get("queryType"), "Top");
+        assert.equal(url.searchParams.has("q"), false);
+        const headers = new Headers(init.headers);
+        assert.equal(headers.get("x-api-key"), "twitterapi-secret");
+        assert.equal(headers.has("authorization"), false);
+        assert.equal(init.redirect, "manual");
+        return json({
+          tweets:
+            requests.length === 1
+              ? [
+                  {
+                    id: "1",
+                    text: "Recent",
+                    createdAt: "Thu Sep 24 11:00:00 +0000 2026",
+                    likeCount: 8,
+                    author: { userName: "Example" },
+                  },
+                  {
+                    id: "2",
+                    text: "Too old",
+                    createdAt: "Mon Sep 21 11:00:00 +0000 2026",
+                    likeCount: 8,
+                  },
+                  {
+                    id: "3",
+                    text: "Few likes",
+                    createdAt: "Thu Sep 24 11:00:00 +0000 2026",
+                    likeCount: 1,
+                  },
+                ]
+              : [
+                  {
+                    id: "1",
+                    text: "Repeated",
+                    createdAt: "Thu Sep 24 11:00:00 +0000 2026",
+                    likeCount: 8,
+                  },
+                  {
+                    id: "4",
+                    text: "Another",
+                    createdAt: "Thu Sep 24 11:00:00 +0000 2026",
+                    likeCount: 8,
+                  },
+                ],
+          has_next_page: requests.length === 1,
+          next_cursor: "page-2",
+        });
+      }),
+    },
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].searchParams.get("cursor"), "page-2");
+  assert.deepEqual(
+    values.map((item) => item.url),
+    ["https://x.com/Example/status/1", "https://x.com/i/status/4"],
+  );
+});
+
+void test("TwitterAPI.io account drains its paid page after restart without another request", async () => {
+  const source = {
+    type: "twitterapi-user" as const,
+    userName: "@Example",
+    limit: 4,
+    maxPages: 1,
+  };
+  let requests = 0;
+  const first = await discoverSourceBatch(source, {
+    lookup,
+    twitterApiIoApiKey: "twitterapi-secret",
+    batchSize: 2,
+    fetch: mockFetch((input, init) => {
+      requests += 1;
+      const url = new URL(input);
+      assert.equal(url.pathname, "/twitter/user/last_tweets");
+      assert.equal(url.searchParams.get("userName"), "Example");
+      assert.equal(url.searchParams.get("includeReplies"), "false");
+      assert.equal(
+        new Headers(init.headers).get("x-api-key"),
+        "twitterapi-secret",
+      );
+      return json({
+        status: "success",
+        code: 0,
+        data: {
+          pin_tweet: { id: "999", text: "Old pinned tweet" },
+          tweets: [1, 2, 3].map((id) => ({
+            id: String(id),
+            text: `Tweet ${id}`,
+          })),
+        },
+        has_next_page: true,
+        next_cursor: "unused",
+      });
+    }),
+  });
+  assert.equal(first.inputs.length, 2);
+  assert.equal(first.complete, false);
+  const second = await discoverSourceBatch(source, {
+    batchSize: 2,
+    checkpoint: JSON.parse(JSON.stringify(first.checkpoint)),
+    fetch: mockFetch(() => {
+      throw new Error("A saved page must not be fetched again");
+    }),
+  });
+  assert.equal(second.inputs.length, 1);
+  assert.deepEqual(
+    [...first.inputs, ...second.inputs].map((input) => input.url),
+    [1, 2, 3].map((id) => `https://x.com/i/status/${id}`),
+  );
+  assert.equal(second.complete, true);
+  assert.equal(requests, 1);
+});
+
+void test("TwitterAPI.io empty, failed and malformed pages never masquerade as content", async () => {
+  const source = { type: "twitterapi-user" as const, userName: "Example" };
+  const empty = await discoverSources([source], {
+    lookup,
+    twitterApiIoApiKey: "twitterapi-secret",
+    fetch: mockFetch(() => json({ tweets: [], has_next_page: false })),
+  });
+  assert.deepEqual(empty, []);
+  let emptyRequests = 0;
+  await discoverSources(
+    [{ type: "twitterapi-user", userName: "Example", maxPages: 5 }],
+    {
+      lookup,
+      twitterApiIoApiKey: "twitterapi-secret",
+      fetch: mockFetch(() => {
+        emptyRequests += 1;
+        return json({ tweets: [], has_next_page: true, next_cursor: "unused" });
+      }),
+    },
+  );
+  assert.equal(emptyRequests, 1);
+  for (const response of [
+    json({ error: "secret provider response" }, 401),
+    json({
+      error: "secret provider response",
+      tweets: [],
+      has_next_page: false,
+    }),
+    json({ tweets: "bad", has_next_page: false }),
+    json({ tweets: [], has_next_page: true }),
+    json({ tweets: [], has_next_page: false, status: "failed" }),
+    json({
+      data: { tweets: [] },
+      has_next_page: false,
+      status: "success",
+      code: 429,
+    }),
+  ]) {
+    await assert.rejects(
+      discoverSources([source], {
+        lookup,
+        twitterApiIoApiKey: "twitterapi-secret",
+        fetch: mockFetch(() => response),
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        !/twitterapi-secret|secret provider response/.test(error.message),
+    );
+  }
+});
+
+void test("TwitterAPI.io identity and read key stay distinct from GetX", () => {
+  const twitter = { type: "twitterapi-user" as const, userName: "Example" };
+  const getx = { type: "getx-user" as const, userName: "Example" };
+  assert.notEqual(sourceIdentity(twitter), sourceIdentity(getx));
+  assert.notEqual(sourceReadKey(twitter), sourceReadKey(getx));
+  assert.equal(
+    sourceReadKey(twitter),
+    sourceReadKey({ ...twitter, checkIntervalMs: 86_400_000 }),
+  );
+});
+
+void test("TwitterAPI.io filtered pages never chain requests in one check and reject repeated cursors", async () => {
+  const source = {
+    type: "twitterapi-search" as const,
+    query: "AI",
+    minLikes: 100,
+    maxPages: 3,
+  };
+  let requests = 0;
+  const options = {
+    lookup,
+    twitterApiIoApiKey: "twitterapi-secret",
+    fetch: mockFetch(() => {
+      requests += 1;
+      return json({
+        tweets: [{ id: String(requests), text: "Low score", likeCount: 1 }],
+        has_next_page: true,
+        next_cursor: "same-cursor",
+      });
+    }),
+  };
+  const first = await discoverSourceBatch(source, options);
+  assert.deepEqual(first.inputs, []);
+  assert.equal(first.complete, false);
+  assert.equal(requests, 1);
+  await assert.rejects(
+    discoverSourceBatch(source, { ...options, checkpoint: first.checkpoint }),
+    /repeated.*cursor/,
+  );
+  assert.equal(requests, 2);
+});
+
 void test("discovery deduplicates X URL aliases and enforces global limits without extra calls", async () => {
   const values = await discoverSources(
     [

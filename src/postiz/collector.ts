@@ -132,6 +132,7 @@ function sourceError(error: unknown, options: SourceOptions): string {
     options.firecrawlApiKey,
     options.getxApiKey,
     options.getxApiToken,
+    options.twitterApiIoApiKey,
   ]) {
     if (secret) message = message.split(secret).join("[redacted]");
   }
@@ -231,9 +232,15 @@ export async function collectSources(
       input: source,
       origin:
         typeof record?.type === "string" &&
-        ["url", "rss", "json-file", "getx-search", "getx-user"].includes(
-          record.type,
-        )
+        [
+          "url",
+          "rss",
+          "json-file",
+          "getx-search",
+          "getx-user",
+          "twitterapi-search",
+          "twitterapi-user",
+        ].includes(record.type)
           ? record.type
           : "invalid",
       primary: record?.primary === true,

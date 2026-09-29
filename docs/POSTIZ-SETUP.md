@@ -270,6 +270,17 @@ worker 以 `CONTENT_POLL_INTERVAL_MS`（默认 60 秒）作为本地队列循环
 包含 OpenRouter、ooffooxx、LiteLLM 及通用模型/API 查询；每个源的窗口、页数和条数
 可独立调整。主动执行 `discover` 同样会读取配置来源并可能产生费用。
 
+TwitterAPI.io 使用独立的 `twitterapi-user` / `twitterapi-search` 来源和
+`TWITTERAPI_IO_API_KEY`，不能将该密钥填入 `GETXAPI_TOKEN`。账号源设置
+`userName`；搜索源设置 `query` 和可选的 `queryType`（`Latest` 或 `Top`）。
+审阅 `config/postiz/sources.tokenhot-competitors.json` 后可复制到私有的
+`/app/content/sources.json` 并设置 `CONTENT_SOURCES_FILE`。该示例列出
+ooffooxx、CheaperInfer、wavespeed_ai、OpenRouter、fal 五个账号，每个源
+`checkIntervalMs=86400000`（一天一次）、`maxPages=1`、`limit=20`、
+`maxAgeHours=168`、`primary=false`。读取 TwitterAPI.io 会产生供应商费用；
+手动 `discover`、失败重试和改动来源配置也可能增加请求。请先核对账号当前费率，
+再启用私有来源文件。`primary=false` 是来源提示，并非内容真实性认证。
+
 更新 `.env.postiz` 后需要重新创建相关容器，单纯 `restart` 不会重新读取 Compose
 环境变量：
 

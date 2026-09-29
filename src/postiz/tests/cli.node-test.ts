@@ -28,6 +28,12 @@ void test("configuration rejects invalid automation controls and strips known cr
   assert.throws(() => readConfig({ CONTENT_AUTO_SUBMIT: "yes" }));
   assert.throws(() => readConfig({ CONTENT_MAX_JOBS_PER_TICK: "NaN" }));
   assert.throws(() => readConfig({ CONTENT_MODEL_PROVIDER: "unknown" }));
+  const sourceKeys = readConfig({
+    GETXAPI_TOKEN: "getx-token",
+    TWITTERAPI_IO_API_KEY: "twitterapi-token",
+  }).source;
+  assert.equal(sourceKeys.getxApiKey, "getx-token");
+  assert.equal(sourceKeys.twitterApiIoApiKey, "twitterapi-token");
   assert.equal(
     safeError(new Error("failed using super-secret"), {
       CONTENT_MODEL_API_KEY: "super-secret",
