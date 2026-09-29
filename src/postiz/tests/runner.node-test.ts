@@ -577,7 +577,7 @@ void test("historical approved output is rechecked for current source attributio
     leaseMs: 30_000,
   });
   assert.equal(result?.state, "failed");
-  assert.match(result!.lastError!, /must link to a supplied source/);
+  assert.match(result!.lastError!, /必须引用至少一个所提供的来源链接/);
   assert.equal(calls, 0);
 });
 

@@ -65,6 +65,17 @@
     integration: "X 账号绑定",
     postiz: "Postiz API",
   };
+  const eventTypeNames = {
+    release: "发布",
+    api_change: "API 变更",
+    pricing_change: "价格变更",
+    benchmark: "基准测试",
+    tutorial: "教程",
+    incident: "故障事件",
+    other: "其他事件",
+  };
+  const historicalSelectionPlaceholder =
+    "Evidence and selection checks passed for this specific topic";
   const missingCheckHelp = {
     brand: "品牌配置缺失或无效",
     model: "写作模型凭据或模型名称缺失",
@@ -564,7 +575,7 @@
           node(
             "p",
             "item-meta",
-            `${topic.identity?.entity || "未识别实体"} · ${topic.identity?.eventType || "事件待定"} · 发现于 ${time(topic.createdAt)}`,
+            `${topic.identity?.entity || "未识别实体"} · ${eventTypeNames[topic.identity?.eventType] || topic.identity?.eventType || "事件待定"} · 发现于 ${time(topic.createdAt)}`,
           ),
         );
         if (needsReview)
@@ -575,12 +586,15 @@
               "同题归组需要核对。确认事件身份与已有内容的关系后再决定。",
             ),
           );
+        const isModelJudgement = ["awaiting_approval", "needs_review"].includes(
+          topic.status,
+        );
         if (topic.reason)
           row.append(
             node(
               "p",
               "reason",
-              `${["awaiting_approval", "needs_review"].includes(topic.status) ? "模型判断" : "审核记录"}：${topic.reason}`,
+              `${isModelJudgement ? "模型判断" : "审核记录"}：${isModelJudgement && String(topic.reason).trim() === historicalSelectionPlaceholder ? "该选题已通过证据和筛选检查（历史记录未保存具体推荐理由）" : topic.reason}`,
             ),
           );
         if (topic.mergedIntoTopicId)

@@ -89,6 +89,45 @@ void test("standalone graph produces a reviewed post without social auth or serv
   assert.ok(!calls[2].system.includes("{reflectionsPrompt}"));
 });
 
+void test("internal model judgments are requested in Chinese while an English post keeps its source URL", async () => {
+  const { model, calls } = fakeModel([
+    '{"relevant":true,"reasoning":"来源说明了开发者需要检查的图片格式。"}',
+    `<report>来源列出 PNG 和 JPEG 格式：${sourceUrl}</report>`,
+    `<post>${post}</post>`,
+    '{"approved":false,"reasons":["正文有依据，但措辞仍需更具体。"]}',
+  ]);
+  const result = await generateContent(input, { model });
+  assert.equal(result.reasoning, "来源说明了开发者需要检查的图片格式。");
+  assert.equal(result.report, `来源列出 PNG 和 JPEG 格式：${sourceUrl}`);
+  assert.equal(result.post, post);
+  assert.deepEqual(result.quality.reasons, ["正文有依据，但措辞仍需更具体。"]);
+  assert.deepEqual(
+    calls.map((call) => call.task),
+    ["relevance", "report", "post", "quality"],
+  );
+  for (const call of calls) {
+    assert.match(
+      call.system,
+      /internal judgments and explanations in Simplified Chinese/,
+    );
+    assert.match(
+      call.system,
+      /Preserve source citations, URLs, technical identifiers/,
+    );
+  }
+  assert.match(
+    calls[0].system,
+    /reasoning value must be in Simplified Chinese/,
+  );
+  assert.match(
+    calls[1].system,
+    /Write this internal brief in Simplified Chinese/,
+  );
+  assert.match(calls[2].system, /public post in English/);
+  assert.match(calls[2].system, /<skip>简体中文具体理由<\/skip>/);
+  assert.match(calls[3].system, /reasons=.*Simplified Chinese/);
+});
+
 void test("irrelevant sources stop after the first decision", async () => {
   const { model, calls } = fakeModel([
     '{"relevant":false,"reasoning":"Unrelated to the audience"}',
@@ -177,7 +216,7 @@ void test("known old launch news is rejected before model calls instead of filli
     assert.equal(result.post, "");
     assert.equal(result.report, "");
     assert.equal(result.quality.approved, false);
-    assert.match(result.reasoning, /older than 30 days/);
+    assert.match(result.reasoning, /超过 30 天/);
     assert.equal(calls.length, 0);
   }
 });
@@ -195,11 +234,7 @@ void test("a dated source cannot support a just-released claim even if its title
     now: Date.parse("2026-09-24T12:00:00Z"),
   });
   assert.equal(result.quality.approved, false);
-  assert.ok(
-    result.quality.reasons.includes(
-      "Old source material cannot support a current-news claim",
-    ),
-  );
+  assert.ok(result.quality.reasons.includes("旧素材不能支持当前新闻的表述"));
   assert.equal(calls.length, 3);
 });
 
@@ -249,7 +284,7 @@ void test("Globalping evidence does not authorize an own-brand model-inference p
   assert.equal(result.quality.approved, false);
   assert.ok(
     result.quality.reasons.includes(
-      "Own-brand capability or performance claims require verifiedFacts",
+      "品牌自身功能或性能主张需要品牌事实库中已核实的证据",
     ),
   );
   assert.equal(calls.length, 3);
@@ -281,14 +316,14 @@ void test("research and writing can each explicitly skip without a repair loop o
   for (const stage of ["report", "post"] as const) {
     const outputs = validOutputs();
     outputs[stage === "report" ? 1 : 2] =
-      "<skip>The evidence does not support one useful claim.</skip>";
+      "<skip>证据不足，无法支持一条有用的主张。</skip>";
     const { model, calls } = fakeModel(outputs);
     const result = await generateContent(input, { model });
     assert.equal(result.relevant, false);
     assert.equal(result.post, "");
     assert.equal(result.quality.approved, false);
     assert.deepEqual(result.quality.reasons, [
-      "The evidence does not support one useful claim.",
+      "证据不足，无法支持一条有用的主张。",
     ]);
     assert.equal(calls.length, stage === "report" ? 2 : 3);
   }
@@ -314,7 +349,7 @@ void test("invalid skip markup cannot bypass validation, and thread segments fai
   const result = await generateContent(input, { model });
   assert.equal(result.quality.approved, false);
   assert.ok(
-    result.quality.reasons.some((reason) => reason.includes("thread segments")),
+    result.quality.reasons.some((reason) => reason.includes("串帖分段")),
   );
   assert.equal(calls.length, 3);
 });
@@ -432,7 +467,7 @@ void test("X length counts CJK and emoji with URL weighting at the 280 boundary"
   assert.deepEqual(validatePost(cjkAtLimit, input), []);
   assert.ok(
     validatePost(`${"字".repeat(129)} ${sourceUrl}`, input).some((reason) =>
-      reason.includes("282 weighted"),
+      reason.includes("282 个加权字符"),
     ),
   );
 
@@ -440,7 +475,7 @@ void test("X length counts CJK and emoji with URL weighting at the 280 boundary"
   assert.deepEqual(validatePost(emojiAtLimit, input), []);
   assert.ok(
     validatePost(`${"👨‍👩‍👧‍👦".repeat(129)} ${sourceUrl}`, input).some((reason) =>
-      reason.includes("282 weighted"),
+      reason.includes("282 个加权字符"),
     ),
   );
 });
@@ -456,7 +491,7 @@ void test("long source URLs cost 23 characters and are retained exactly", () => 
   assert.deepEqual(validatePost(atLimit, withLongUrl), []);
   assert.ok(
     validatePost(`a${atLimit}`, withLongUrl).some((reason) =>
-      reason.includes("281 weighted"),
+      reason.includes("281 个加权字符"),
     ),
   );
 });
@@ -466,11 +501,11 @@ void test("a shorter configured limit and unknown links reject before a quality-
     validatePost(post, {
       ...input,
       brand: { ...brand, maxPostLength: 80 },
-    }).some((reason) => reason.includes("maximum is 80")),
+    }).some((reason) => reason.includes("最多 80 个")),
   );
   assert.ok(
     validatePost("No evidence link", input).includes(
-      "The post must link to a supplied source",
+      "帖子必须引用至少一个所提供的来源链接",
     ),
   );
 
@@ -481,7 +516,7 @@ void test("a shorter configured limit and unknown links reject before a quality-
   assert.equal(result.quality.approved, false);
   assert.ok(
     result.quality.reasons.some((reason) =>
-      reason.includes("outside the supplied evidence"),
+      reason.includes("不在所提供证据中的 URL"),
     ),
   );
   assert.equal(calls.length, 3);
@@ -512,7 +547,7 @@ void test("a verified brand fact may supplement but cannot replace the source ci
       "Example API accepts PNG. https://example.com/product",
       customInput,
     ),
-    ["The post must link to a supplied source"],
+    ["帖子必须引用至少一个所提供的来源链接"],
   );
 });
 
@@ -536,7 +571,7 @@ void test("a brand-only CTA fails before quality approval even when its URL is v
   const result = await generateContent(customInput, { model });
   assert.equal(result.quality.approved, false);
   assert.deepEqual(result.quality.reasons, [
-    "The post must link to a supplied source",
+    "帖子必须引用至少一个所提供的来源链接",
   ]);
   assert.equal(calls.length, 3);
 });

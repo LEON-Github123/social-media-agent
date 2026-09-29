@@ -26,7 +26,7 @@ const brand: BrandConfig = {
     "Help developers compare models, understand API changes and control integration costs.",
   contentRules: ["Cite concrete evidence; do not invent benchmarks."],
   examples: [],
-  language: "Chinese",
+  language: "English",
 };
 const identity: TopicIdentity = {
   entity: "Acme",
@@ -71,7 +71,8 @@ function assessment(
     candidateId: source.id,
     scores: { relevance: 90, evidence: 90, developerValue: 90 },
     certainty: "confirmed",
-    reason: "A specific API release gives developers an integration decision.",
+    reason:
+      "该版本新增结构化 API 输出，可帮助开发者判断是否调整解析与校验逻辑。",
     identity: { ...identity },
     identityEvidence: passage,
     ...patch,
@@ -87,7 +88,7 @@ function scriptedModel(
         (group: { topicId: string }) => ({
           topicId: group.topicId,
           confirmed: true,
-          reason: "The exact product, version and announcement are the same.",
+          reason: "来源均指向同一产品、确切版本和发布公告。",
         }),
       ),
     }),
@@ -166,6 +167,10 @@ void test("a well-evidenced single topic uses the configured model and audience 
   assert.equal(result.candidateDecisions[0].totalScore, 92);
   assert.equal(result.topics[0].status, "ready");
   assert.equal(result.topics[0].id, topicIdentityKey(brand.id, identity));
+  assert.equal(result.topics[0].reason, assessment(sources[0]).reason);
+  assert.deepEqual(result.topics[0].identity, identity);
+  assert.match(calls[0].system, /Write every reason in Simplified Chinese/);
+  assert.match(calls[0].system, /verbatim identityEvidence unchanged/);
   assert.match(calls[0].system, /Tokenhot/);
   assert.ok(calls[0].system.includes(brand.audience));
   assert.match(calls[0].system, /Popularity is not evidence/);
@@ -182,6 +187,9 @@ void test("twenty reports of one announcement have one owner and at most eight s
   );
   const { model, calls } = scriptedModel(sources, (source) =>
     assessment(source, {
+      reason: source.primary
+        ? "官方公告给出结构化输出变更，开发者可据此调整 API 接入。"
+        : "第三方转述该公告，可补充了解本次 API 更新。",
       scores: source.primary
         ? { relevance: 75, evidence: 75, developerValue: 75 }
         : { relevance: 95, evidence: 95, developerValue: 95 },
@@ -213,6 +221,15 @@ void test("twenty reports of one announcement have one owner and at most eight s
     ["selection", "selection_review"],
   );
   assert.equal(result.modelCalls, 2);
+  assert.equal(
+    result.topics[0].reason,
+    "官方公告给出结构化输出变更，开发者可据此调整 API 接入。\n归组依据：来源均指向同一产品、确切版本和发布公告。",
+  );
+  assert.match(calls[1].system, /Write every reason in Simplified Chinese/);
+  assert.equal(
+    JSON.parse(calls[1].user).groups[0].candidates[0].text.includes(passage),
+    true,
+  );
 });
 
 void test("separate URLs for an unversioned same-day event require a grouping review", async () => {
@@ -318,11 +335,8 @@ void test("a version prefix or conflicting title cannot be used as identity proo
   assert.ok(
     result.candidateDecisions.every((item) => item.status === "needs_review"),
   );
-  assert.match(result.candidateDecisions[0].reason, /exact product version/);
-  assert.match(
-    result.candidateDecisions[1].reason,
-    /conflicts with the source title/,
-  );
+  assert.match(result.candidateDecisions[0].reason, /未出现该确切产品版本/);
+  assert.match(result.candidateDecisions[1].reason, /与来源标题不一致/);
   assert.equal(calls.length, 1);
 });
 
@@ -373,9 +387,12 @@ void test("unsupported URLs, impossible event dates, and a release without an ev
   assert.ok(
     result.candidateDecisions.every((item) => item.status === "needs_review"),
   );
-  assert.match(result.candidateDecisions[0].reason, /not supplied/);
-  assert.match(result.candidateDecisions[1].reason, /event date is invalid/);
-  assert.match(result.candidateDecisions[2].reason, /No specific version/);
+  assert.match(
+    result.candidateDecisions[0].reason,
+    /公告链接未出现在提供的来源中/,
+  );
+  assert.match(result.candidateDecisions[1].reason, /事件日期无效/);
+  assert.match(result.candidateDecisions[2].reason, /缺少具体版本/);
 });
 
 void test("unknown, impossible, and future publication times remain unknown, while stale news is rejected", async () => {
@@ -398,7 +415,7 @@ void test("unknown, impossible, and future publication times remain unknown, whi
     result.candidateDecisions.map((item) => item.status),
     ["needs_review", "needs_review", "needs_review", "rejected"],
   );
-  assert.match(result.candidateDecisions[3].reason, /freshness window/);
+  assert.match(result.candidateDecisions[3].reason, /超过配置的时效范围/);
   assert.equal(
     calculateSelectionScore({
       relevance: 90,
@@ -683,7 +700,7 @@ void test("ambiguous permanent history requires explicit resolution instead of c
   );
   assert.equal(result.topics[0].status, "needs_review");
   assert.equal(result.topics[0].existingTopicId, undefined);
-  assert.match(result.topics[0].reason, /Multiple historical topics/);
+  assert.match(result.topics[0].reason, /可能对应多个历史选题/);
   assert.equal(calls.length, 1);
 });
 
@@ -743,7 +760,7 @@ void test("entity or product name drift on the same announcement cannot create a
     assert.equal(result.topics[0].existingTopicId, undefined);
     assert.deepEqual(result.topics[0].conflictingTopicIds, [existing.id]);
     assert.equal(result.topics[0].identityKey, result.topics[0].id);
-    assert.match(result.topics[0].reason, /identity changed/);
+    assert.match(result.topics[0].reason, /事件的判断发生变化/);
     assert.equal(calls.length, 1);
   }
 });
@@ -770,7 +787,7 @@ void test("name drift on shared announcement evidence within the first batch can
       (decision) => decision.status === "needs_review",
     ),
   );
-  assert.match(result.topics[0].reason, /within this batch/);
+  assert.match(result.topics[0].reason, /本批素材/);
   assert.equal(calls.length, 1);
 });
 

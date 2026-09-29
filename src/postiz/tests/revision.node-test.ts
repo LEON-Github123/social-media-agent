@@ -138,7 +138,7 @@ void test("edit preserves exact submitted text and still checks relevance, sourc
     },
   );
   assert.equal(withoutSource.quality.approved, false);
-  assert.match(withoutSource.quality.reasons.join(";"), /supplied source/);
+  assert.match(withoutSource.quality.reasons.join(";"), /所提供的来源链接/);
   const claim = await generateContent(
     {
       brand,
@@ -155,7 +155,7 @@ void test("edit preserves exact submitted text and still checks relevance, sourc
     },
   );
   assert.equal(claim.quality.approved, false);
-  assert.match(claim.quality.reasons.join(";"), /verifiedFacts/);
+  assert.match(claim.quality.reasons.join(";"), /品牌事实库中已核实的证据/);
 });
 
 void test("revision preserves identity, freezes original evidence, audits prior draft and consumes generation quota", (t) => {
