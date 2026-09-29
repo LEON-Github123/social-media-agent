@@ -1,10 +1,10 @@
 [
   {
-    "id": "openai-news",
+    "id": "openai-node-releases",
     "type": "rss",
-    "url": "https://openai.com/news/rss.xml",
+    "url": "https://github.com/openai/openai-node/releases.atom",
     "maxAgeHours": 336,
-    "limit": 5,
+    "limit": 2,
     "checkIntervalMs": 21600000,
     "primary": true
   },
@@ -45,11 +45,11 @@
     "primary": true
   },
   {
-    "id": "google-ai-blog",
+    "id": "google-genai-js-releases",
     "type": "rss",
-    "url": "https://blog.google/innovation-and-ai/technology/ai/rss/",
+    "url": "https://github.com/googleapis/js-genai/releases.atom",
     "maxAgeHours": 336,
-    "limit": 3,
+    "limit": 2,
     "checkIntervalMs": 21600000,
     "primary": true
   }

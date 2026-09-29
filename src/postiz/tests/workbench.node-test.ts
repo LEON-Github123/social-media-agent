@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createTcpServer } from "node:net";
@@ -49,6 +49,45 @@ async function freePort(): Promise<number> {
   await new Promise<void>((done) => server.close(() => done()));
   return address.port;
 }
+
+void test("source status follows current configuration and preserves inactive history", async (t) => {
+  const { dir, config, store } = await fixture(t);
+  const sourcesFile = join(dir, "sources.json");
+  store.ensureSources({
+    brandId: brand.id,
+    sources: [
+      { id: "old-feed", origin: "rss" },
+      { id: "current-feed", origin: "rss" },
+    ],
+  });
+  const source = {
+    id: "current-feed",
+    type: "rss",
+    url: "https://example.com/feed.xml",
+  };
+  await writeFile(sourcesFile, JSON.stringify([source]));
+  const workbench = new Workbench({
+    store,
+    config: { ...config, sourcesFile },
+    brand,
+    postizUrl: "https://postiz.example",
+  });
+  assert.deepEqual(
+    (await workbench.snapshot()).sources.map(({ sourceId, enabled }) => ({
+      sourceId,
+      enabled,
+    })),
+    [
+      { sourceId: "current-feed", enabled: true },
+      { sourceId: "old-feed", enabled: false },
+    ],
+  );
+  await writeFile(sourcesFile, JSON.stringify([{ ...source, enabled: false }]));
+  assert.ok(
+    (await workbench.snapshot()).sources.every((item) => !item.enabled),
+  );
+  assert.equal(store.listSourceCheckpoints({ brandId: brand.id }).length, 2);
+});
 
 async function requestWithHost(
   port: number,

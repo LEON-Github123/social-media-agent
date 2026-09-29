@@ -204,7 +204,30 @@ done
 compose_test exec -T content-worker node --input-type=module - <<'JS'
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as delay } from 'node:timers/promises';
 assert.equal(process.getuid(), 1000);
+// Compose treats a container without a healthcheck as ready as soon as it runs.
+// Wait for the worker itself to create/migrate SQLite before checking storage.
+const deadline = Date.now() + 60000;
+let initialized = false;
+while (Date.now() < deadline) {
+  if (existsSync('/data/content.sqlite')) {
+    let db;
+    try {
+      db = new DatabaseSync('/data/content.sqlite', { readOnly: true });
+      db.prepare('SELECT COUNT(*) FROM postiz_content_jobs').get();
+      initialized = true;
+      break;
+    } catch {
+      // The worker may still be committing its first migration.
+    } finally {
+      db?.close();
+    }
+  }
+  await delay(250);
+}
+assert.ok(initialized, 'Worker did not initialize SQLite within 60 seconds');
 assert.ok(existsSync('/data/content.sqlite'));
 const response = await fetch(`${process.env.POSTIZ_BASE_URL}/integrations`, { signal: AbortSignal.timeout(10000) });
 assert.ok([401, 403].includes(response.status), `Internal Postiz API returned ${response.status}`);

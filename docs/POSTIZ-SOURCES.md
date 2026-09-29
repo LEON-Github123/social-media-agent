@@ -1,89 +1,30 @@
 # Tokenhot 首批自动内容来源核验（2026-09-29）
 
-目标是 AI 模型、API 和开发者实用更新。以下链接均为发布方自己的公开 RSS；不需要 X 凭据或付费数据源。核验了响应、XML、条目链接和日期，再用仓库 `src/postiz/sources.ts` 的 `discoverSourceBatch` 做离线解析测试。配置中的 `primary` 只是来源归属提示，不能替代文章事实核查。
+目标是 AI 模型、API 和开发者实用更新。以下链接均为发布方自己的公开 RSS/Atom；不需要 X 凭据或付费数据源。核验了响应、XML、条目链接和日期，再用仓库 `src/postiz/sources.ts` 的 `discoverSourceBatch` 做离线解析测试。配置中的 `primary` 只是来源归属提示，不能替代文章事实核查。
 
 ## 建议启用的六个来源
 
-| ID / RSS URL                                                                                                   | 实测响应与最新条目                                                                                                                                                                                                                                                  | 选题用途与过滤建议                                                                                                                                                                                                     |
-| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `openai-news` — [OpenAI News RSS](https://openai.com/news/rss.xml)                                             | 200；753,015 字节；1,234 条。最新：[How we will do better for Australia](https://openai.com/index/how-we-will-do-better-for-australia)，2026-09-28 19:00 UTC。                                                                                                      | 模型、API、Codex 正式公告的一手来源。该 feed 同时含政策、合作、客户案例、活动页面；只选可核实的产品/API/开发者变化，排除纯营销和表单。由于 feed 很宽，`limit: 3` 当前会被非技术文章占满；可按实际队列容量提高到 5–10。 |
-| `google-deepmind` — [Google DeepMind RSS](https://deepmind.google/blog/rss.xml)                                | 200；70,182 字节；100 条。最新：[Introducing Gemini 3.8 Live with Live Avatar](https://deepmind.google/blog/introducing-gemini-38-live-with-live-avatar/)，2026-09-24 16:20 UTC。                                                                                   | Google 模型能力及研究发布。优先模型发布、API 可用性、开发者可复现内容；研究展望仍需核对产品可用性。                                                                                                                    |
-| `huggingface-blog` — [Hugging Face Blog RSS](https://huggingface.co/blog/feed.xml)                             | 200；256,576 字节；869 条。最新：[Holo4: powering generalist computer-use agents](https://huggingface.co/blog/Hcompany/holo4)，2026-09-28 09:44 UTC。当前条目有 `<link>` 和 `pubDate`。                                                                             | 开源模型、推理和实操教程。博客允许第三方机构发布，`primary: false`；对具体模型声明回查作者和模型卡，过滤纯宣传、无操作价值文章。                                                                                       |
-| `github-ai` — [GitHub AI & ML RSS](https://github.blog/ai-and-ml/feed/)                                        | 200；725,869 字节；10 条。最新：[GitHub Copilot app for Beginners: How to build custom workflows with canvases](https://github.blog/ai-and-ml/github-copilot/github-copilot-app-for-beginners-how-to-build-custom-workflows-with-canvases/)，2026-09-25 18:00 UTC。 | Copilot、AI 开发工具和实际工作流。优先新能力及清晰教程，跳过泛观点文章。修复 CDATA 误判后已通过离线解析。                                                                                                              |
-| `github-copilot-changelog` — [GitHub Copilot Changelog RSS](https://github.blog/changelog/label/copilot/feed/) | 200；45,215 字节；10 条。最新：[Claude Sonnet 5.5 in GitHub Copilot](https://github.blog/changelog/2026-09-28-claude-sonnet-5-5-in-github-copilot)，2026-09-28 18:03 UTC。                                                                                          | 模型可用性、Copilot 功能、开发者接口更新。标签虽聚焦 Copilot，仍有企业设置和小更新；按用户可用性、影响面筛选。修复 CDATA 误判后已通过离线解析。                                                                        |
-| `google-ai-blog` — [Google AI Blog RSS](https://blog.google/innovation-and-ai/technology/ai/rss/)              | 200；30,433 字节；20 条。最新：[Watch the winning trailer from the Future Vision XPRIZE, The Gifted](https://blog.google/innovation-and-ai/technology/ai/winner-future-vision-xprize/)，2026-09-28 19:00 UTC。旧 `/technology/ai/rss/` 会跳转到此地址。             | Google AI 产品发布的补充来源。当前最新条目偏活动/业务新闻，只保留模型/API/开发者可操作的变更；与 DeepMind 重复的内容去重。                                                                                             |
+| ID / RSS 或 Atom URL                                                                                           | 实测响应与最新条目                                                                                                                                                                                                                                                  | 选题用途与过滤建议                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `openai-node-releases` — [OpenAI Node SDK Atom](https://github.com/openai/openai-node/releases.atom)           | 200；33,310 字节；10 条。最新正式版 [v7.23.0](https://github.com/openai/openai-node/releases/tag/v7.23.0)，2026-09-23 07:07 UTC；次新 [v7.22.0](https://github.com/openai/openai-node/releases/tag/v7.22.0)，2026-09-22 18:27 UTC。                                 | OpenAI 官方 JS/TS API SDK；前两版的内嵌说明包括外部存储支持、模型标识。仅选用户可感知的 API 变化；SDK 增加模型标识不等于该模型已对所有用户开放。`limit: 2`。 |
+| `google-deepmind` — [Google DeepMind RSS](https://deepmind.google/blog/rss.xml)                                | 200；70,182 字节；100 条。最新：[Introducing Gemini 3.8 Live with Live Avatar](https://deepmind.google/blog/introducing-gemini-38-live-with-live-avatar/)，2026-09-24 16:20 UTC。                                                                                   | Google 模型能力及研究发布。优先模型发布、API 可用性、开发者可复现内容；研究展望仍需核对产品可用性。                                                          |
+| `huggingface-blog` — [Hugging Face Blog RSS](https://huggingface.co/blog/feed.xml)                             | 200；256,576 字节；869 条。最新：[Holo4: powering generalist computer-use agents](https://huggingface.co/blog/Hcompany/holo4)，2026-09-28 09:44 UTC。当前条目有 `<link>` 和 `pubDate`。                                                                             | 开源模型、推理和实操教程。博客允许第三方机构发布，`primary: false`；对具体模型声明回查作者和模型卡，过滤纯宣传、无操作价值文章。                             |
+| `github-ai` — [GitHub AI & ML RSS](https://github.blog/ai-and-ml/feed/)                                        | 200；725,869 字节；10 条。最新：[GitHub Copilot app for Beginners: How to build custom workflows with canvases](https://github.blog/ai-and-ml/github-copilot/github-copilot-app-for-beginners-how-to-build-custom-workflows-with-canvases/)，2026-09-25 18:00 UTC。 | Copilot、AI 开发工具和实际工作流。优先新能力及清晰教程，跳过泛观点文章。修复 CDATA 误判后已通过离线解析。                                                    |
+| `github-copilot-changelog` — [GitHub Copilot Changelog RSS](https://github.blog/changelog/label/copilot/feed/) | 200；45,215 字节；10 条。最新：[Claude Sonnet 5.5 in GitHub Copilot](https://github.blog/changelog/2026-09-28-claude-sonnet-5-5-in-github-copilot)，2026-09-28 18:03 UTC。                                                                                          | 模型可用性、Copilot 功能、开发者接口更新。标签虽聚焦 Copilot，仍有企业设置和小更新；按用户可用性、影响面筛选。修复 CDATA 误判后已通过离线解析。              |
+| `google-genai-js-releases` — [Google Gen AI JS SDK Atom](https://github.com/googleapis/js-genai/releases.atom) | 200；16,845 字节；10 条。最新 [v2.24.0](https://github.com/googleapis/js-genai/releases/tag/v2.24.0)，2026-09-22 04:46 UTC；次新 [v2.23.0](https://github.com/googleapis/js-genai/releases/tag/v2.23.0)，2026-09-16 23:16 UTC。                                     | Google 官方 Gemini/Vertex JS/TS SDK；内嵌说明涉及语音配置、检索交互和自定义 fetch。过滤内部生成代码与补丁，`limit: 2`。                                      |
 
-上表的条目数是 2026-09-29 一次快照，非每天新增量。各 feed 响应均低于采集器默认 2,000,000 字节限制。六个 feed 都带可解析发布日期，适用 `maxAgeHours: 336`（14 天）。RSS `limit` 是读取顺序上的截断，不是主题匹配或按日期排序；宽泛 feed 可能在截断前占满非目标文章。
+上表的条目数是 2026-09-29 一次快照，非每天新增量。各 feed 响应均低于采集器默认 2,000,000 字节限制。六个 feed 都带可解析发布日期，适用 `maxAgeHours: 336`（14 天）。SDK Atom 发布说明作为内嵌正文被解析；仍需按实际功能价值筛选版本，不把版本号本身当作选题。
 
-## 建议配置
+## 当前配置与取舍
 
-按当前 `SourceConfig` 结构给主代理的首期候选。六项已通过离线解析，实际部署环境仍需验证出站连通。`checkIntervalMs: 21600000` 为 6 小时。`primary` 是发布方归属提示，不应自动让模型采信所有内容。
+实际六源配置见 [sources.tokenhot.json](../config/postiz/sources.tokenhot.json)：每 6 小时检查、只取近 14 天，单轮每源上限相加为 16 条。`primary` 是发布方归属提示，不会自动核实文章主张。SDK 两源由其官方仓库发布，release notes 的功能点仍应回查产品文档或 API 可用性。
 
-```json
-[
-  {
-    "id": "openai-news",
-    "type": "rss",
-    "url": "https://openai.com/news/rss.xml",
-    "maxAgeHours": 336,
-    "limit": 5,
-    "checkIntervalMs": 21600000,
-    "primary": true
-  },
-  {
-    "id": "google-deepmind",
-    "type": "rss",
-    "url": "https://deepmind.google/blog/rss.xml",
-    "maxAgeHours": 336,
-    "limit": 3,
-    "checkIntervalMs": 21600000,
-    "primary": true
-  },
-  {
-    "id": "huggingface-blog",
-    "type": "rss",
-    "url": "https://huggingface.co/blog/feed.xml",
-    "maxAgeHours": 336,
-    "limit": 3,
-    "checkIntervalMs": 21600000,
-    "primary": false
-  },
-  {
-    "id": "github-ai",
-    "type": "rss",
-    "url": "https://github.blog/ai-and-ml/feed/",
-    "maxAgeHours": 336,
-    "limit": 3,
-    "checkIntervalMs": 21600000,
-    "primary": true
-  },
-  {
-    "id": "github-copilot-changelog",
-    "type": "rss",
-    "url": "https://github.blog/changelog/label/copilot/feed/",
-    "maxAgeHours": 336,
-    "limit": 3,
-    "checkIntervalMs": 21600000,
-    "primary": true
-  },
-  {
-    "id": "google-ai-blog",
-    "type": "rss",
-    "url": "https://blog.google/innovation-and-ai/technology/ai/rss/",
-    "maxAgeHours": 336,
-    "limit": 3,
-    "checkIntervalMs": 21600000,
-    "primary": true
-  }
-]
-```
-
-SDK 发布动态可作为低优先级备选，不宜让版本号占满选题。已验证 [OpenAI Node SDK Atom](https://github.com/openai/openai-node/releases.atom)（200、33,310 字节、10 条；最新 `v7.23.0`，2026-09-23 07:07 UTC）与 [Google Gen AI JavaScript SDK Atom](https://github.com/googleapis/js-genai/releases.atom)（200、16,845 字节、10 条；最新 `v2.24.0`，2026-09-22 04:46 UTC）能被当前解析器离线读取。若启用，建议每源 `limit: 1`，人工只选有开发者可感知能力变化的版本，不把补丁或依赖升级写成新闻。[Anthropic TypeScript SDK Atom](https://github.com/anthropics/anthropic-sdk-typescript/releases.atom)也可解析，但当前前几条混合 `vertex-sdk`、`sdk`、`google-cloud-sdk` 子包版本，首期暂缓。
+原 [OpenAI News RSS](https://openai.com/news/rss.xml) 本身可解析，但首次云端采集时 5 个候选文章页全部返回 HTTP 403；原 [Google AI Blog RSS](https://blog.google/innovation-and-ai/technology/ai/rss/) 的前 3 条均与开发者选题无关并被筛除。因此用两个有内嵌完整发布说明的 SDK Atom 源替换。另试过 [Codex releases Atom](https://github.com/openai/codex/releases.atom)，最近 5 条是仅有约 30 字符说明的 alpha 版本，正式发布被挤到第 6 条，不适合小 `limit` 的首批配置。[Anthropic TypeScript SDK Atom](https://github.com/anthropics/anthropic-sdk-typescript/releases.atom)前几条混合多个子包版本，也暂缓。
 
 ## 解析与连通性边界
 
 - 真实 GitHub RSS 的 `<content:encoded><![CDATA[...]]>` 中包含文章 HTML 的 `<!DOCTYPE html ...>`。原解析器对**整个原始文本**匹配 `<!DOCTYPE|ENTITY`，误报 `RSS must not contain a DTD or entity declarations`。这不是 XML 顶层 DTD：两份 XML 由 Python `ElementTree` 正常解析，首次匹配分别在 `github-ai.xml` 偏移 2476 和 `github-copilot.xml` 偏移 2171，前文为 `<content:encoded><![CDATA[`。主代理修复了 CDATA/注释词法识别，同时保留对真正 DTD/实体声明的拒绝；来源核验随后用原 XML 样本复测成功。
-- 对真实下载的六份 RSS 注入**仅内存** fetch 和示例公网 lookup 后，当前 `discoverSourceBatch` 各返回 3 条，标题、文章 URL、UTC 日期正常。两个 SDK Atom 也通过离线解析；Google Gen AI SDK 在 14 天窗口内返回 2 条。此测试只证明解析兼容，不证明生产网络连通。公开 XML 样本供主代理保存在工作区外的 `review-evidence/source-research` 验收目录；不纳入代码提交。
-- 本机直接运行采集器访问这些公网地址时，全部因 `Source DNS must resolve exclusively to public addresses` 被安全边界拒绝。未修改或绕过生产 DNS 校验；需在实际部署环境验证源站出站连接和首次采集。独立 HTTPS 读取六个公开 feed 获得 200 与完整 XML，其中 GitHub AI 首次握手超时、重试成功。
+- 对真实下载的四份内容 RSS 注入**仅内存** fetch 和示例公网 lookup 后，`discoverSourceBatch` 各返回 3 条；两个 SDK Atom 也通过离线解析，OpenAI Node 返回 2 条、Google Gen AI JS 在 14 天窗口内返回 2 条。标题、文章 URL、UTC 日期正常。此测试只证明解析兼容，不证明生产网络连通。公开 XML 样本保存在工作区外 `review-evidence/source-research` 验收目录，不纳入代码提交。
+- 首轮云端验证中，GitHub 博客两源触发 DNS 公网边界，DeepMind 的响应压缩格式不被原网络层接受，均未形成健康采集；网络层有界 gzip/br/deflate 处理与地址范围修复仍待重新部署验证。不能将本地 XML 解析成功写作云端成功。本机直连采集器也受本地 DNS 公网校验限制，未绕过该边界。两个新 SDK Atom 源在实际云端的 DNS 与出站连接同样尚未验证。
 - [Google Developers Blog RSS](https://developers.googleblog.com/feeds/posts/default?alt=rss) 200、20 条，且包含 API/SDK 文章；但条目没有 `pubDate` 或 `dc:date`，设置 `maxAgeHours` 后采集器会丢弃全部条目，所以先不纳入 14 天首期配置。[Anthropic `/news/rss.xml`](https://www.anthropic.com/news/rss.xml) 返回 404；[Microsoft AI DevBlogs RSS](https://devblogs.microsoft.com/ai/feed/) 虽返回 200，却是 0 条。旧 [Google Gemini JS SDK Atom](https://github.com/google-gemini/generative-ai-js/releases.atom) 跳转到 deprecated 仓库，最新仅 2025-04，均不推荐。
 - `type: "url"` 只读取配置的那一个文章 URL；公告目录页不会自动发现新文章。因此未把 Anthropic 等静态新闻索引页列作自动来源。

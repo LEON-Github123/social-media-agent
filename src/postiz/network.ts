@@ -2,6 +2,9 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { Readable, Transform, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 export interface PublicAddress {
   address: string;
@@ -50,7 +53,10 @@ export function isPublicAddress(address: string): boolean {
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99))) ||
+      (a === 192 &&
+        (b === 168 ||
+          (b === 0 && (c === 0 || c === 2)) ||
+          (b === 88 && c === 99))) ||
       (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
       (a === 203 && b === 0 && c === 113)
     );
@@ -115,20 +121,98 @@ export async function publicAddresses(
     : await (
         lookup ?? ((host) => dnsLookup(host, { all: true, verbatim: true }))
       )(hostname);
-  if (
-    !addresses.length ||
-    addresses.some(
-      (item) => !isPublicAddress(item.address) || ![4, 6].includes(item.family),
-    )
-  ) {
-    throw new Error("Source DNS must resolve exclusively to public addresses");
+  const invalid = addresses.filter(
+    (item) =>
+      !isPublicAddress(item.address) || item.family !== isIP(item.address),
+  );
+  if (!addresses.length || invalid.length) {
+    const details = invalid.length
+      ? invalid
+          .slice(0, 3)
+          .map(
+            (item) =>
+              `${String(item.address)
+                .slice(0, 64)
+                .replace(/[^\da-fA-F:.]/g, "?")}/${item.family}`,
+          )
+          .join(", ")
+      : "no addresses";
+    throw new Error(
+      `Source DNS must resolve exclusively to public addresses (${hostname.slice(0, 200).replace(/[^a-zA-Z0-9.:-]/g, "?")}: ${details})`,
+    );
   }
   return addresses;
+}
+
+function contentDecoder(encoding: string | null): Transform | null {
+  const value = encoding?.trim().toLowerCase();
+  if (!value || value === "identity") return null;
+  if (value === "gzip") return createGunzip();
+  if (value === "br") return createBrotliDecompress();
+  if (value === "deflate") return createInflate();
+  throw new Error(
+    `Source returned unsupported content encoding: ${value.slice(0, 80).replace(/[^a-z0-9, ._-]/g, "?")}`,
+  );
+}
+
+async function readBody(
+  body: Readable,
+  encoding: string | null,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string> {
+  let decoder: Transform | null;
+  try {
+    decoder = contentDecoder(encoding);
+  } catch (error) {
+    body.destroy();
+    throw error;
+  }
+  let compressedBytes = 0;
+  let decodedBytes = 0;
+  const chunks: Buffer[] = [];
+  const compressedLimit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      compressedBytes += chunk.length;
+      callback(
+        compressedBytes > maxBytes
+          ? new Error("Source response exceeds byte limit")
+          : null,
+        chunk,
+      );
+    },
+  });
+  const collect = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      decodedBytes += chunk.length;
+      if (decodedBytes > maxBytes) {
+        callback(new Error("Source response exceeds byte limit"));
+        return;
+      }
+      chunks.push(chunk);
+      callback();
+    },
+  });
+  try {
+    if (decoder)
+      await pipeline(body, compressedLimit, decoder, collect, { signal });
+    else await pipeline(body, compressedLimit, collect, { signal });
+  } catch (error) {
+    if (
+      decoder &&
+      error instanceof Error &&
+      !/byte limit|abort/i.test(error.message)
+    )
+      throw new Error(`Source response decoding failed (${encoding})`);
+    throw error;
+  }
+  return Buffer.concat(chunks, decodedBytes).toString("utf8");
 }
 
 async function readFetchBody(
   response: Response,
   maxBytes: number,
+  signal: AbortSignal,
 ): Promise<string> {
   const length = Number(response.headers.get("content-length"));
   if (length > maxBytes) {
@@ -136,25 +220,12 @@ async function readFetchBody(
     throw new Error("Source response exceeds byte limit");
   }
   if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes)
-        throw new Error("Source response exceeds byte limit");
-      chunks.push(value);
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks).toString("utf8");
+  return readBody(
+    Readable.from(response.body as AsyncIterable<Uint8Array>),
+    response.headers.get("content-encoding"),
+    maxBytes,
+    signal,
+  );
 }
 
 function requestPinned(
@@ -189,39 +260,25 @@ function requestPinned(
           if (value !== undefined)
             headers.set(key, Array.isArray(value) ? value.join(", ") : value);
         }
-        const encoding = headers.get("content-encoding");
-        if (
-          (encoding && encoding !== "identity") ||
-          Number(headers.get("content-length")) > maxBytes
-        ) {
+        if (Number(headers.get("content-length")) > maxBytes) {
           response.destroy();
-          reject(
-            new Error(
-              encoding && encoding !== "identity"
-                ? "Source returned unsupported content encoding"
-                : "Source response exceeds byte limit",
-            ),
-          );
+          reject(new Error("Source response exceeds byte limit"));
           return;
         }
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maxBytes) {
-            response.destroy(new Error("Source response exceeds byte limit"));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on("error", reject);
-        response.on("end", () =>
-          resolve({
-            url: url.href,
-            status: response.statusCode ?? 0,
-            headers,
-            text: Buffer.concat(chunks).toString("utf8"),
-          }),
+        void readBody(
+          response,
+          headers.get("content-encoding"),
+          maxBytes,
+          init.signal,
+        ).then(
+          (text) =>
+            resolve({
+              url: url.href,
+              status: response.statusCode ?? 0,
+              headers,
+              text,
+            }),
+          reject,
         );
       },
     );
@@ -270,7 +327,7 @@ export async function fetchPublicText(
         let url = publicUrl(input);
         const headers = new Headers(options.headers);
         headers.delete("host");
-        headers.set("accept-encoding", "identity");
+        headers.set("accept-encoding", "gzip, br, deflate");
         if (!headers.has("user-agent"))
           headers.set("user-agent", "ContentWorker/1.0");
         for (let redirects = 0; ; redirects += 1) {
@@ -297,7 +354,7 @@ export async function fetchPublicText(
               url: url.href,
               status: fetched.status,
               headers: fetched.headers,
-              text: await readFetchBody(fetched, maxBytes),
+              text: await readFetchBody(fetched, maxBytes, controller.signal),
             };
           } else {
             response = await requestPinned(url, addresses[0], init, maxBytes);

@@ -807,33 +807,39 @@
   function renderSources(items) {
     const target = $("sources-list");
     clear(target);
-    $("source-count").textContent = `${items.length} 个`;
+    const active = items.filter((source) => source.enabled !== false);
+    const inactive = items.filter((source) => source.enabled === false);
+    $("source-count").textContent =
+      `${active.length} 个启用 · ${inactive.length} 个停用`;
     if (!items.length)
       return add(
         target,
         empty("暂无配置来源", "配置的自动来源及检查进度会显示在这里。"),
       );
-    items.forEach((source) => {
+    [...active, ...inactive].forEach((source) => {
+      const enabled = source.enabled !== false;
       const row = node("article", "list-item compact");
       add(
         row,
         add(
           node("div", "item-top"),
           node("h3", "", source.sourceId || source.origin || "来源"),
-          pill(source.lastFailure ? "failed" : "ready"),
+          enabled
+            ? pill(source.lastFailure ? "failed" : "ready")
+            : node("span", "pill neutral", "已停用"),
         ),
         node(
           "p",
           "item-meta",
-          `${source.origin || "来源"} · ${source.primary ? "主来源" : "补充来源"} · 上次检查 ${time(source.checkedAt)} · 下次 ${time(source.nextCheckAt)}`,
+          `${source.origin || "来源"} · ${source.primary ? "主来源" : "补充来源"} · ${enabled ? "上次检查" : "历史检查"} ${source.checkedAt > 0 ? time(source.checkedAt) : "待首次检查"}${enabled ? ` · 下次 ${source.nextCheckAt > 0 ? time(source.nextCheckAt) : "待安排"}` : ""}`,
         ),
       );
       if (source.lastFailure)
         row.append(
           node(
             "p",
-            "inline-warning",
-            `${source.lastFailure}（连续失败 ${source.failureCount || 0} 次）`,
+            enabled ? "inline-warning" : "item-meta",
+            `${enabled ? "" : "历史失败记录："}${source.lastFailure}（连续失败 ${source.failureCount || 0} 次）`,
           ),
         );
       target.append(row);

@@ -29,6 +29,8 @@ import {
   assertSchedulingAllowed,
 } from "./runner.js";
 import { JobConflictError } from "./store-errors.js";
+import { readLocalText } from "./files.js";
+import { sourceIdentity } from "./sources.js";
 
 type Json = Record<string, unknown>;
 type RuntimeView = {
@@ -144,7 +146,24 @@ export class Workbench {
     return brand;
   }
 
-  snapshot() {
+  async snapshot() {
+    const configuredSources = this.config.sourcesFile
+      ? (JSON.parse(await readLocalText(this.config.sourcesFile)) as unknown)
+      : [];
+    if (!Array.isArray(configuredSources))
+      throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
+    const activeSourceIds = new Set(
+      configuredSources
+        .filter((source) => source?.enabled !== false)
+        .map((source) =>
+          sourceIdentity(source, {
+            ...this.config.source,
+            ...(this.config.sourcesFile
+              ? { baseDir: dirname(this.config.sourcesFile) }
+              : {}),
+          }),
+        ),
+    );
     const brand = this.brand;
     const quota = brand
       ? this.store.getGenerationQuota({
@@ -194,7 +213,12 @@ export class Workbench {
       candidates,
       topics: brand ? this.store.listTopics({ brandId: brand.id }) : [],
       sources: brand
-        ? this.store.listSourceCheckpoints({ brandId: brand.id })
+        ? this.store
+            .listSourceCheckpoints({ brandId: brand.id })
+            .map((source) => ({
+              ...source,
+              enabled: activeSourceIds.has(source.sourceId),
+            }))
         : [],
       events: brand
         ? this.store.listWorkbenchEvents({ brandId: brand.id })
@@ -696,7 +720,7 @@ export function createWorkbenchHttp(
         return json(response, 200, { authenticated: false });
       }
       if (path === "/api/snapshot" && method === "GET")
-        return json(response, 200, workbench.snapshot());
+        return json(response, 200, await workbench.snapshot());
       const job = /^\/api\/jobs\/([^/]+)$/.exec(path);
       if (job && method === "GET")
         return json(response, 200, workbench.job(decodeURIComponent(job[1])));
