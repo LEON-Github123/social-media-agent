@@ -1,0 +1,2200 @@
+/* global document, window, URL, fetch */
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    snapshot: null,
+    selectedJob: null,
+    detail: null,
+    busy: false,
+    loading: false,
+    snapshotHealthy: false,
+    timer: null,
+    socialTab: "recommended",
+    renderedCompetitorMode: null,
+  };
+  const statusNames = {
+    new: "待筛选",
+    selected: "已选中",
+    rejected: "已拒绝",
+    needs_review: "待审核",
+    awaiting_approval: "待批准写作",
+    failed: "失败",
+    ready: "就绪",
+    existing: "已有选题",
+    queued: "排队中",
+    processing: "生成中",
+    submitting: "提交中",
+    submitted: "已提交",
+    unknown: "结果待核实",
+    pending: "等待抓取",
+    fetched: "已抓取",
+    draft: "Postiz 草稿",
+    scheduled: "已排期",
+    published: "已发布",
+    accepted: "已接收",
+    not_submitted: "未提交",
+    start: "开始",
+    finish: "完成",
+    error: "出错",
+    edit: "修改",
+    reject: "拒绝",
+    note: "备注",
+    verified: "已确认",
+    retired: "已停用",
+  };
+  const stageNames = {
+    discovery: "来源收集",
+    selection: "选题筛选",
+    writing: "检查待写任务",
+    submission: "检查待交付草稿",
+    sync: "同步 Postiz",
+    tick: "流程",
+    pause: "暂停状态",
+    relevance: "相关性判断",
+    report: "研究简报",
+    post: "生成文案",
+    quality: "质量检查",
+    "writing.job": "生成任务",
+    "submission.job": "提交任务",
+    "submission.manual": "手动提交",
+    "sync.manual": "手动同步",
+  };
+  const checkNames = {
+    brand: "品牌配置",
+    model: "写作模型",
+    integration: "X 账号绑定",
+    postiz: "Postiz API",
+  };
+  const eventTypeNames = {
+    release: "发布",
+    api_change: "API 变更",
+    pricing_change: "价格变更",
+    benchmark: "基准测试",
+    tutorial: "教程",
+    incident: "故障事件",
+    other: "其他事件",
+  };
+  const historicalSelectionPlaceholder =
+    "Evidence and selection checks passed for this specific topic";
+  const missingCheckHelp = {
+    brand: "品牌配置缺失或无效",
+    model: "写作模型凭据或模型名称缺失",
+    integration: "X 渠道 ID 缺失",
+    postiz: "Postiz API 凭据缺失",
+  };
+  const time = (value) => {
+    if (value == null || value === "") return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? "—"
+      : new Intl.DateTimeFormat("zh-CN", {
+          timeZone: "Asia/Shanghai",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(date);
+  };
+  const label = (value) => statusNames[value] || String(value || "—");
+  const text = (value) => (value == null || value === "" ? "—" : String(value));
+  const array = (value) => (Array.isArray(value) ? value : []);
+  const shortId = (value) =>
+    value && value.length > 24
+      ? `${value.slice(0, 10)}…${value.slice(-8)}`
+      : value;
+  const topicById = (id) =>
+    array(state.snapshot?.topics).find((topic) => topic.id === id);
+  const legacyNeedsApproval = (job, stateKey) =>
+    ["queued", "ready", "failed"].includes(job?.[stateKey]) &&
+    job.writingApproved === false &&
+    !job.postizId;
+  const titleForJob = (id) =>
+    array(state.snapshot?.topics).find(
+      (topic) => topic.jobId === id && !topic.mergedIntoTopicId,
+    )?.title || shortId(id);
+  const node = (tag, cls, content) => {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (content != null) el.textContent = String(content);
+    return el;
+  };
+  const add = (parent, ...children) => {
+    children.filter(Boolean).forEach((child) => parent.append(child));
+    return parent;
+  };
+  const clear = (el) => el.replaceChildren();
+  const pill = (value, tone) =>
+    node("span", `pill ${tone || toneFor(value)}`, label(value));
+  const toneFor = (value) =>
+    ["failed", "rejected", "unknown", "ERROR"].includes(value)
+      ? "danger"
+      : [
+            "needs_review",
+            "awaiting_approval",
+            "submitting",
+            "processing",
+            "queued",
+            "pending",
+          ].includes(value)
+        ? "warn"
+        : [
+              "ready",
+              "selected",
+              "published",
+              "draft",
+              "scheduled",
+              "fetched",
+              "verified",
+            ].includes(value)
+          ? "good"
+          : "neutral";
+  const safeUrl = (value) => {
+    try {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) ? url.href : null;
+    } catch {
+      return null;
+    }
+  };
+  const link = (value, caption) => {
+    const url = safeUrl(value);
+    if (!url) return node("span", "muted", text(caption || value));
+    const a = node("a", "external", caption || url);
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    return a;
+  };
+  const empty = (title, detail) =>
+    add(
+      node("div", "empty"),
+      node("strong", "", title),
+      node("span", "", detail),
+    );
+  const note = (message, kind = "info") => {
+    const el = $("notice");
+    el.textContent = message;
+    el.className = `notice ${kind}`;
+    el.hidden = !message;
+  };
+  const setBusy = (busy) => {
+    state.busy = busy;
+    document.querySelectorAll("button").forEach((button) => {
+      if (!button.closest("#app-view")) return;
+      if (button.id === "refresh" || button.id === "logout") return;
+      if (button.id === "run")
+        button.disabled =
+          busy ||
+          !state.snapshotHealthy ||
+          !state.snapshot?.readiness?.ready ||
+          !!state.snapshot?.runtime?.running ||
+          !!state.snapshot?.runtime?.paused;
+      else if (button.closest("#app-view form"))
+        button.disabled =
+          busy ||
+          !state.snapshotHealthy ||
+          (!button.closest("#brand-facts") &&
+            !state.snapshot?.readiness?.ready) ||
+          !!(
+            button.closest("#job-detail .actions") && $("detail-refresh-error")
+          );
+      else
+        button.disabled =
+          busy ||
+          !state.snapshotHealthy ||
+          !!(
+            button.closest("#job-detail .actions") && $("detail-refresh-error")
+          ) ||
+          !!(button.dataset.requiresReady && !state.snapshot?.readiness?.ready);
+    });
+  };
+
+  async function request(path, method = "GET", body) {
+    const response = await fetch(path, {
+      method,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      /* A gateway may return an empty error body. */
+    }
+    if (response.status === 401) {
+      if (path === "/api/login") throw new Error("密码不正确，请重试。");
+      const expired = !!state.snapshot;
+      showLogin(expired);
+      throw new Error(
+        expired ? "登录已过期，请重新输入工作台密码" : "请先登录工作台",
+      );
+    }
+    if (!response.ok)
+      throw new Error(
+        typeof data?.error === "string"
+          ? data.error
+          : `请求失败（${response.status}）`,
+      );
+    return data;
+  }
+
+  function showLogin(expired = false) {
+    $("loading-view").hidden = true;
+    $("login-view").hidden = false;
+    $("app-view").hidden = true;
+    $("logout").hidden = true;
+    $("connection").textContent = expired ? "会话已过期" : "需要登录";
+    $("login-error").textContent = expired ? "会话已过期，请重新登录。" : "";
+    $("login-error").hidden = !expired;
+    $("password").value = "";
+    $("password").focus();
+  }
+  function showApp() {
+    $("loading-view").hidden = true;
+    $("login-view").hidden = true;
+    $("app-view").hidden = false;
+    $("logout").hidden = false;
+    $("connection").textContent = "已连接";
+  }
+
+  async function refresh({
+    detail = false,
+    quiet = false,
+    preserveForm = false,
+  } = {}) {
+    if (state.loading || state.busy) return;
+    state.loading = true;
+    if (!$("loading-view").hidden) {
+      $("loading-view").classList.remove("failed");
+      $("loading-view").querySelector("h2").textContent = "正在连接工作台";
+      $("loading-view").querySelector("p").textContent =
+        "读取运行状态与今日任务…";
+    }
+    if (!quiet) $("connection").textContent = "正在同步";
+    try {
+      const snapshot = await request("/api/snapshot");
+      state.snapshot = snapshot;
+      state.snapshotHealthy = true;
+      showApp();
+      render(snapshot);
+      if (detail && state.selectedJob)
+        await loadJob(state.selectedJob, { preserveForm });
+      if (!quiet) note("数据已更新。", "success");
+    } catch (error) {
+      state.snapshotHealthy = false;
+      setBusy(false);
+      if (!$("app-view").hidden) {
+        $("connection").textContent = "连接异常";
+        note(error.message, "error");
+      } else if (
+        !$("login-view").hidden &&
+        error.message !== "登录已过期，请重新输入工作台密码"
+      ) {
+        $("login-error").textContent = error.message;
+        $("login-error").hidden = false;
+      } else if (!$("loading-view").hidden) {
+        $("connection").textContent = "连接异常";
+        $("loading-view").classList.add("failed");
+        $("loading-view").querySelector("h2").textContent = "暂时无法连接";
+        $("loading-view").querySelector("p").textContent =
+          `${error.message}。请点击右上角“刷新”重试。`;
+      }
+    } finally {
+      state.loading = false;
+    }
+  }
+  async function mutate(path, payload, success, options = {}) {
+    if (state.busy || !state.snapshotHealthy) return;
+    setBusy(true);
+    note("正在处理，请稍候…");
+    let succeeded = false;
+    try {
+      await request(path, "POST", payload);
+      succeeded = true;
+      note(success, "success");
+      if (options.reset) options.reset();
+    } catch (error) {
+      note(error.message, "error");
+    } finally {
+      setBusy(false);
+      await refresh({ detail: true, quiet: true, preserveForm: !succeeded });
+    }
+  }
+
+  function mutateSocial(path, payload, success) {
+    return mutate(path, payload, success, {
+      reset: () => {
+        document.activeElement?.blur();
+        $("topics-list")
+          .querySelectorAll("details[open]")
+          .forEach((details) => {
+            details.open = false;
+          });
+      },
+    });
+  }
+
+  function render(s) {
+    const report = s.report || {};
+    const jobs = array(report.jobs?.items);
+    const topics = array(s.topics);
+    const awaiting = topics.filter(
+      (t) => t.status === "awaiting_approval" && !t.mergedIntoTopicId,
+    ).length;
+    const grouping = topics.filter(
+      (t) => t.status === "needs_review" && !t.mergedIntoTopicId,
+    ).length;
+    const pendingJobs = jobs.filter((job) =>
+      legacyNeedsApproval(job, "localState"),
+    ).length;
+    $("snapshot-time").textContent =
+      `更新于 ${time(report.scope?.generatedAt || Date.now())} · 北京时间`;
+    $("quota-value").textContent = s.quota
+      ? `${s.quota.remaining} / ${s.quota.limit}`
+      : "—";
+    $("quota-meta").textContent = s.quota
+      ? `今日已用 ${s.quota.used} 次 · ${time(s.quota.resetsAt)} 重置 · ${s.quota.timeZone || "Asia/Shanghai"}`
+      : "额度暂不可用";
+    $("quota-fill").max = s.quota?.limit || 3;
+    $("quota-fill").value = s.quota?.used || 0;
+    $("runtime-value").textContent = s.runtime?.paused
+      ? "已暂停"
+      : s.runtime?.running
+        ? "运行中"
+        : "待命";
+    $("runtime-meta").textContent = s.runtime?.stage
+      ? `当前阶段：${stageNames[s.runtime.stage] || s.runtime.stage}`
+      : `上次运行：${time(s.runtime?.lastRunAt)}`;
+    $("readiness-value").textContent = s.readiness?.ready
+      ? "可以运行"
+      : "需要处理";
+    const checks = array(s.readiness?.checks);
+    $("readiness-meta").textContent =
+      `${checks.filter((c) => c.ready).length} / ${checks.length} 项检查通过`;
+    const missing = checks.filter((check) => !check.ready);
+    $("material-readiness").hidden = !missing.length;
+    $("material-readiness").textContent = missing.length
+      ? `素材提交暂不可用：${missing.map((check) => missingCheckHelp[check.key] || checkNames[check.key] || check.label).join("、")}。请检查服务端配置。`
+      : "";
+    const socialRecommended = array(s.socialCandidates).filter(
+      (item) => item.tier === "recommended",
+    ).length;
+    $("attention-value").textContent = String(
+      s.competitorMode
+        ? socialRecommended + pendingJobs
+        : awaiting + grouping + pendingJobs,
+    );
+    $("attention-meta").textContent = s.competitorMode
+      ? `${socialRecommended} 条竞品推荐 · ${pendingJobs} 个历史待批任务`
+      : `${awaiting} 个待批准 · ${grouping} 个归组核对 · ${pendingJobs} 个历史待批任务`;
+    $("review-link").href =
+      s.competitorMode || awaiting + grouping ? "#topics" : "#jobs";
+    $("review-link").textContent =
+      s.competitorMode || awaiting + grouping
+        ? "去审核素材 →"
+        : "查看内容任务 →";
+    $("brand-name").textContent = s.brand?.name || "品牌未配置";
+    $("runtime-error").textContent = s.runtime?.lastError || "";
+    $("runtime-error").hidden = !s.runtime?.lastError;
+    $("run").disabled =
+      state.busy ||
+      !s.readiness?.ready ||
+      !!s.runtime?.running ||
+      !!s.runtime?.paused;
+    $("pause").textContent = s.runtime?.paused ? "恢复处理" : "暂停处理";
+    const postiz = safeUrl(s.postizUrl);
+    $("sidebar-postiz").hidden = !postiz;
+    if (postiz) $("sidebar-postiz").href = postiz;
+    renderChecks(checks);
+    renderEvents(array(s.events));
+    $("candidates").hidden = !!s.competitorMode;
+    document.querySelector('.side-nav a[href="#candidates"]').hidden =
+      !!s.competitorMode;
+    $("social-review-controls").hidden = !s.competitorMode;
+    $("topics-title").textContent = s.competitorMode
+      ? "竞品素材审批"
+      : "素材审批";
+    $("topics-description").textContent = s.competitorMode
+      ? "按今日推荐、待观察、处理异常与历史记录查看来源和评估；批准后生成品牌原创内容。"
+      : "按同一事件归组查看来源和模型判断；批准写作会使用今日额度并送至 Postiz 草稿。";
+    if (!s.competitorMode && !activeFormIn("candidates-list"))
+      renderCandidates(array(s.candidates), report);
+    if (
+      state.renderedCompetitorMode !== !!s.competitorMode ||
+      !activeFormIn("topics-list")
+    ) {
+      if (s.competitorMode) renderSocialTopics(s);
+      else renderTopics(topics);
+    }
+    state.renderedCompetitorMode = !!s.competitorMode;
+    renderJobs(jobs);
+    if (!activeFormIn("brand-fact-list")) renderBrandFacts(array(s.brandFacts));
+    renderSources(array(s.sources));
+    setBusy(state.busy);
+  }
+  function activeFormIn(id) {
+    const target = $(id);
+    return (
+      (target.contains(document.activeElement) &&
+        document.activeElement.closest("form")) ||
+      !!target.querySelector("details[open]")
+    );
+  }
+  function renderEvents(items) {
+    const target = $("events-list");
+    clear(target);
+    if (!items.length)
+      return add(
+        target,
+        empty("暂无流程动态", "运行流程后，这里会显示各阶段进度。"),
+      );
+    items.slice(0, 8).forEach((event) => {
+      const row = node("div", "list-item compact");
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", stageNames[event.stage] || event.stage || "流程"),
+          pill(event.status),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${time(event.createdAt)}${event.jobId ? ` · 任务 ${event.jobId}` : ""}`,
+        ),
+      );
+      if (event.detail) row.append(node("p", "reason", event.detail));
+      target.append(row);
+    });
+  }
+  function renderChecks(checks) {
+    const target = $("checks");
+    clear(target);
+    if (!checks.length)
+      return add(target, empty("暂无检查结果", "请刷新后重试。"));
+    checks.forEach((item) => {
+      const row = add(
+        node("div", "check-row"),
+        node("span", `check-dot ${item.ready ? "good" : "danger"}`),
+        add(
+          node("div"),
+          node("strong", "", checkNames[item.key] || item.label || item.key),
+          node(
+            "small",
+            "",
+            item.ready
+              ? "已配置"
+              : missingCheckHelp[item.key] || "未配置，请检查服务端设置",
+          ),
+        ),
+      );
+      target.append(row);
+    });
+  }
+  function renderCandidates(items, report) {
+    const target = $("candidates-list");
+    clear(target);
+    $("candidate-count").textContent = `${items.length} 条`;
+    if (!items.length)
+      return add(
+        target,
+        empty("还没有候选素材", "从上方添加链接，或运行一次采集流程。"),
+      );
+    const reasons = new Map(
+      array(report.candidates?.decisionItems).map((item) => [
+        item.id,
+        item.reason,
+      ]),
+    );
+    items.forEach((c) => {
+      const row = node("article", "list-item");
+      const title =
+        c.document?.title ||
+        c.input?.title ||
+        c.document?.url ||
+        c.input?.url ||
+        c.id;
+      add(
+        row,
+        add(node("div", "item-top"), node("h3", "", title), pill(c.status)),
+        node(
+          "p",
+          "item-meta",
+          `${c.origin || "手动"} · ${c.primary ? "主来源" : "补充来源"} · ${label(c.fetchState)} · ${time(c.createdAt)}`,
+        ),
+      );
+      const url = c.document?.url || c.input?.url;
+      if (url) row.append(link(url, url));
+      const reason = reasons.get(c.id) || c.lastError;
+      if (reason)
+        row.append(
+          node("p", c.lastError ? "inline-warning" : "reason", reason),
+        );
+      if (c.topicId) {
+        const relation = node(
+          "p",
+          "item-meta",
+          `关联选题：${topicById(c.topicId)?.title || shortId(c.topicId)}`,
+        );
+        relation.title = c.topicId;
+        row.append(relation);
+      }
+      if (c.legacyConflict && c.status === "needs_review" && !c.topicId) {
+        row.append(
+          node(
+            "p",
+            "inline-warning",
+            "存在历史任务关联；只有确认是不同的新事件后，才能重新进入筛选。",
+          ),
+        );
+        row.append(
+          actionForm(
+            "确认新事件",
+            [field("reason", "确认依据", true)],
+            async (values) =>
+              mutate(
+                `/api/candidates/${encodeURIComponent(c.id)}/retry`,
+                { reason: values.reason, confirmNewEvent: true },
+                "新事件已确认，候选将重新筛选。",
+              ),
+          ),
+        );
+      } else if (
+        !c.topicId &&
+        !c.legacyConflict &&
+        ["failed", "rejected", "needs_review"].includes(c.status)
+      ) {
+        const form = actionForm(
+          "重试候选",
+          [field("reason", "重试原因", true)],
+          async (values) =>
+            mutate(
+              `/api/candidates/${encodeURIComponent(c.id)}/retry`,
+              { reason: values.reason },
+              "候选已提交重试。",
+            ),
+        );
+        row.append(form);
+      }
+      target.append(row);
+    });
+  }
+  function renderSocialTopics(snapshot) {
+    const target = $("topics-list");
+    const candidates = new Map(
+      array(snapshot.candidates).map((candidate) => [candidate.id, candidate]),
+    );
+    const social = new Map(
+      array(snapshot.socialCandidates).map((item) => [item.candidateId, item]),
+    );
+    const linked = new Set();
+    const entries = array(snapshot.topics).map((topic) => {
+      const states = array(topic.sourceCandidateIds)
+        .map((id) => social.get(id))
+        .filter(Boolean);
+      states.forEach((item) => linked.add(item.candidateId));
+      const selected =
+        states.find((item) => item.tier === "recommended") ||
+        states.find((item) => item.tier === "error") ||
+        states.find((item) => item.tier === "watch") ||
+        states[0] ||
+        null;
+      return { topic, selected };
+    });
+    for (const item of social.values()) {
+      if (!linked.has(item.candidateId))
+        entries.push({ topic: null, selected: item });
+    }
+    const tabFor = ({ topic, selected }) => {
+      if (
+        topic &&
+        (topic.hasContent ||
+          topic.mergedIntoTopicId ||
+          ["ready", "rejected", "existing"].includes(topic.status))
+      )
+        return "history";
+      if (topic?.status === "needs_review")
+        return selected?.tier === "error" || !selected ? "errors" : "watch";
+      if (selected?.tier === "recommended") return "recommended";
+      if (selected?.tier === "error") return "errors";
+      if (selected?.tier === "watch" || selected?.tier === "pending")
+        return "watch";
+      return "history";
+    };
+    const counts = { recommended: 0, watch: 0, errors: 0, history: 0 };
+    entries.forEach((entry) => {
+      counts[tabFor(entry)] += 1;
+    });
+    const tabNames = {
+      recommended: "今日推荐",
+      watch: "待观察",
+      errors: "处理异常",
+      history: "历史记录",
+    };
+    $("social-review-tabs")
+      .querySelectorAll("[data-social-tab]")
+      .forEach((button) => {
+        const tab = button.dataset.socialTab;
+        button.textContent = `${tabNames[tab]} ${counts[tab]}`;
+        button.setAttribute(
+          "aria-selected",
+          tab === state.socialTab ? "true" : "false",
+        );
+        button.classList.toggle("selected", tab === state.socialTab);
+      });
+    const quota = snapshot.socialQuotas;
+    $("social-quota").textContent = quota
+      ? `今日 X 数据请求 ${quota.provider?.used ?? "—"}/${quota.provider?.limit ?? 10} · AI 评估 ${quota.selection?.used ?? "—"}/${quota.selection?.limit ?? 40}`
+      : "竞品处理额度暂不可用";
+    const visible = entries
+      .filter((entry) => tabFor(entry) === state.socialTab)
+      .sort(
+        (a, b) =>
+          (b.selected?.score ?? -1) - (a.selected?.score ?? -1) ||
+          (b.topic?.createdAt ?? 0) - (a.topic?.createdAt ?? 0),
+      );
+    $("topic-count").textContent = `${visible.length} 条`;
+    clear(target);
+    if (!visible.length) {
+      target.append(
+        empty(
+          `暂无${tabNames[state.socialTab]}素材`,
+          "下次流程运行后会自动更新。",
+        ),
+      );
+      return;
+    }
+    visible.forEach(({ topic, selected }) => {
+      const assessment = selected?.assessment;
+      const original = selected ? candidates.get(selected.candidateId) : null;
+      const title = assessment?.title || topic?.title || "候选素材待评估";
+      const row = node("article", "list-item social-item");
+      const stateLabel =
+        selected?.tier === "recommended"
+          ? "推荐"
+          : selected?.tier === "watch"
+            ? "待观察"
+            : selected?.tier === "error"
+              ? "评估异常"
+              : "历史";
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", title),
+          node(
+            "span",
+            `pill ${selected?.tier === "recommended" ? "good" : selected?.tier === "error" ? "danger" : "warn"}`,
+            stateLabel,
+          ),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${selected?.social?.authorHandle ? `@${selected.social.authorHandle}` : "作者未提供"} · ${topic ? `选题 ${shortId(topic.id)}` : "尚未形成选题"}`,
+        ),
+      );
+      if (assessment?.summary)
+        row.append(node("p", "social-summary", assessment.summary));
+      if (assessment?.reason)
+        row.append(node("p", "reason", `推荐依据：${assessment.reason}`));
+      if (assessment?.angle)
+        row.append(node("p", "reason", `可写角度：${assessment.angle}`));
+      if (array(assessment?.factGaps).length)
+        row.append(
+          node(
+            "p",
+            "inline-warning",
+            `待核实：${assessment.factGaps.join("、")}`,
+          ),
+        );
+      if (selected?.social) {
+        const metric = (value) =>
+          Number.isSafeInteger(value) && value >= 0
+            ? value.toLocaleString("zh-CN")
+            : "未提供";
+        const socialData = selected.social;
+        const rate = selected.performance?.interactionRate;
+        const metrics = node("div", "social-metrics");
+        [
+          ["浏览", socialData.views],
+          ["喜欢", socialData.likes],
+          ["回复", socialData.replies],
+          ["转发", socialData.reposts],
+          ["引用", socialData.quotes],
+          ["收藏", socialData.bookmarks],
+        ].forEach(([name, value]) => {
+          metrics.append(
+            add(
+              node("div"),
+              node("small", "", name),
+              node("strong", "", metric(value)),
+            ),
+          );
+        });
+        row.append(metrics);
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            `互动率：${typeof rate === "number" && Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : "未提供"} · 观测于 ${time(socialData.observedAt)}`,
+          ),
+        );
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            "传播高不等于产品声明已核实；涉及产品事实仍须核对来源。",
+          ),
+        );
+        const performance = selected.performance;
+        if (assessment)
+          row.append(
+            node(
+              "p",
+              "reason",
+              `综合分 ${selected.score ?? "—"} · 传播 ${performance?.score ?? "未提供"}（40%）· 相关性 ${assessment.relevance ?? "—"}（35%）· 借鉴价值 ${assessment.reusability ?? "—"}（25%）`,
+            ),
+          );
+        const ranks = [
+          ["浏览", performance?.viewsScore],
+          ["互动量", performance?.interactionsScore],
+          ["互动率", performance?.rateScore],
+        ].filter(([, value]) => typeof value === "number");
+        if (ranks.length)
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              `同年龄档比较：${ranks.map(([name, value]) => `${name}超过约 ${value}% 的对照帖`).join("；")}。`,
+            ),
+          );
+        if (
+          performance?.accountScore !== null &&
+          typeof performance?.accountScore === "number"
+        )
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              `互动量超过约 ${performance.accountScore}% 的同账号对照帖（${performance.accountSampleCount} 个样本）。`,
+            ),
+          );
+        else
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "同账号基线样本不足，暂不判断传播是否超常。",
+            ),
+          );
+        if (performance?.sufficient !== true)
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "同年龄档传播指标或对照样本不足，先观察后判断。",
+            ),
+          );
+      }
+      const url =
+        original?.document?.url ||
+        original?.input?.url ||
+        array(topic?.sourceUrls)[0];
+      if (url) row.append(link(url, "查看原文 ↗"));
+      const sourceText = original?.document?.text || original?.input?.text;
+      if (sourceText) {
+        const details = node("details", "social-original");
+        details.append(
+          node("summary", "", "展开原文"),
+          node("p", "pre-wrap", sourceText),
+        );
+        row.append(details);
+      }
+      if (topic?.brandReadiness?.ready === false)
+        row.append(
+          node(
+            "p",
+            "inline-warning",
+            `待补品牌资料：${array(topic.brandReadiness.missing).join("、") || "请补齐品牌事实"}。补齐前不能批准写作。`,
+          ),
+        );
+      const genericModelError =
+        "历史评估失败，原始原因未记录；补齐指标后有界重评";
+      const displayModelError = (value) =>
+        /^(?:modelError|model error|Selection model failed or returned an invalid decision set; no candidates were auto-selected)$/i.test(
+          value.trim(),
+        )
+          ? genericModelError
+          : value;
+      const plainError =
+        selected?.errorMessage ||
+        (selected?.tier === "error" ? genericModelError : "");
+      if (plainError)
+        row.append(node("p", "inline-warning", displayModelError(plainError)));
+      if (!assessment?.reason && topic?.reason)
+        row.append(node("p", "reason", displayModelError(topic.reason)));
+      if (
+        selected &&
+        ["awaiting_approval", "needs_review"].includes(topic?.status) &&
+        !topic.hasContent &&
+        !topic.mergedIntoTopicId
+      ) {
+        const actions = node("div", "topic-actions");
+        const endpoint = `/api/topics/${encodeURIComponent(topic.id)}/review`;
+        const conflicts = array(topic.conflictingTopicIds);
+        const mergeOptions = conflicts
+          .filter(
+            (id) =>
+              id &&
+              id !== topic.id &&
+              array(snapshot.topics).some(
+                (candidate) => candidate.id === id && candidate.jobId,
+              ),
+          )
+          .map((id) => ({
+            value: id,
+            label:
+              array(snapshot.topics).find((candidate) => candidate.id === id)
+                ?.title || id,
+          }));
+        if (conflicts.length && !mergeOptions.length)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "该选题与既有内容冲突，尚无可合并的任务；请先核对归组。",
+            ),
+          );
+        if (selected.tier === "watch")
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "待观察素材可由你人工选择；批准仍需核实来源和品牌事实。",
+            ),
+          );
+        if (
+          ["recommended", "watch"].includes(selected.tier) &&
+          topic.brandReadiness?.ready === true &&
+          (!conflicts.length || mergeOptions.length)
+        )
+          actions.append(
+            actionForm(
+              selected.tier === "watch" ? "人工选择并批准写作" : "批准写作",
+              [
+                field(
+                  "writingAngle",
+                  "写作角度（可选）",
+                  false,
+                  assessment?.angle || "",
+                ),
+                ...(mergeOptions.length
+                  ? [
+                      selectField("mergeWith", "合并到已有内容", [
+                        { value: "", label: "请选择合并目标" },
+                        ...mergeOptions,
+                      ]),
+                    ]
+                  : []),
+              ],
+              async (values) => {
+                if (conflicts.length && !values.mergeWith) {
+                  note("该选题与已有内容冲突，请选择合并目标。", "error");
+                  return;
+                }
+                mutateSocial(
+                  endpoint,
+                  {
+                    decision: "approve",
+                    reason: "人工批准竞品选题写作",
+                    purpose: "brand_original",
+                    ...(values.writingAngle
+                      ? { writingAngle: values.writingAngle }
+                      : {}),
+                    ...(values.mergeWith
+                      ? { mergeWith: values.mergeWith }
+                      : {}),
+                  },
+                  "已批准写作，任务将进入 Postiz 草稿流程。",
+                );
+              },
+            ),
+          );
+        else if (
+          ["recommended", "watch"].includes(selected.tier) &&
+          topic.brandReadiness?.ready !== true
+        )
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "品牌资料状态尚未核验，暂不能批准写作。",
+            ),
+          );
+        actions.append(
+          actionForm(
+            "跳过此选题",
+            [field("reason", "跳过原因", true)],
+            async (values) =>
+              mutateSocial(
+                endpoint,
+                { decision: "reject", reason: values.reason },
+                "已跳过此选题。",
+              ),
+          ),
+        );
+        row.append(actions);
+      }
+      if (selected && state.socialTab !== "history") {
+        const actions = node("div", "topic-actions");
+        if (!selected.held)
+          actions.append(
+            actionForm(
+              "暂存观察",
+              [field("reason", "暂存原因", true)],
+              async (values) =>
+                mutateSocial(
+                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/hold`,
+                  { held: true, reason: values.reason },
+                  "已暂存观察。",
+                ),
+            ),
+          );
+        else actions.append(node("span", "pill warn", "已暂存"));
+        if (selected.tier === "error" && selected.attempts < 2)
+          actions.append(
+            actionForm(
+              "重试评估",
+              [field("reason", "重试原因", true)],
+              async (values) =>
+                mutateSocial(
+                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/retry`,
+                  { reason: values.reason },
+                  "已提交重试。",
+                ),
+            ),
+          );
+        else if (selected.tier === "error")
+          actions.append(
+            node(
+              "p",
+              "inline-warning",
+              "已到自动重试上限，请人工核查来源或配置。",
+            ),
+          );
+        row.append(actions);
+      }
+      if (!selected && topic) {
+        row.append(node("p", "item-meta", "非竞品来源 · 历史资料"));
+        array(topic.sourceUrls).forEach((sourceUrl) =>
+          row.append(link(sourceUrl, sourceUrl)),
+        );
+        const sourceIds = array(topic.sourceCandidateIds);
+        const manualOnly =
+          sourceIds.length > 0 &&
+          sourceIds.every((id) => candidates.get(id)?.origin === "manual");
+        if (
+          manualOnly &&
+          topic.status === "awaiting_approval" &&
+          !topic.hasContent &&
+          topic.brandReadiness?.ready !== false
+        )
+          row.append(
+            actionForm("批准手动选题写作", [], async () =>
+              mutateSocial(
+                `/api/topics/${encodeURIComponent(topic.id)}/review`,
+                {
+                  decision: "approve",
+                  reason: "人工批准手动选题写作",
+                  purpose: "brand_original",
+                },
+                "已批准写作。",
+              ),
+            ),
+          );
+      }
+      target.append(row);
+    });
+  }
+  function renderTopics(items) {
+    const target = $("topics-list");
+    clear(target);
+    $("topic-count").textContent = `${items.length} 个`;
+    if (!items.length)
+      return add(
+        target,
+        empty("暂无选题", "流程筛选素材后，选题会出现在这里。"),
+      );
+    const order = { awaiting_approval: 0, needs_review: 1 };
+    [...items]
+      .sort(
+        (a, b) =>
+          (order[a.status] ?? 2) - (order[b.status] ?? 2) ||
+          b.createdAt - a.createdAt,
+      )
+      .forEach((topic) => {
+        const row = node("article", "list-item");
+        const needsReview = topic.status === "needs_review";
+        add(
+          row,
+          add(
+            node("div", "item-top"),
+            node("h3", "", topic.title || topic.identity?.product || topic.id),
+            needsReview
+              ? node("span", "pill warn", "归组待核对")
+              : pill(topic.status),
+          ),
+          node(
+            "p",
+            "item-meta",
+            `${topic.identity?.entity || "未识别实体"} · ${eventTypeNames[topic.identity?.eventType] || topic.identity?.eventType || "事件待定"} · 发现于 ${time(topic.createdAt)}`,
+          ),
+        );
+        if (needsReview)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "同题归组需要核对。确认事件身份与已有内容的关系后再决定。",
+            ),
+          );
+        const isModelJudgement = ["awaiting_approval", "needs_review"].includes(
+          topic.status,
+        );
+        if (topic.reason)
+          row.append(
+            node(
+              "p",
+              "reason",
+              `${isModelJudgement ? "模型判断" : "审核记录"}：${isModelJudgement && String(topic.reason).trim() === historicalSelectionPlaceholder ? "该选题已通过证据和筛选检查（历史记录未保存具体推荐理由）" : topic.reason}`,
+            ),
+          );
+        if (topic.mergedIntoTopicId)
+          row.append(
+            node("p", "item-meta", `已合并到：${topic.mergedIntoTopicId}`),
+          );
+        if (array(topic.conflictingTopicIds).length)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              `可能重复：${topic.conflictingTopicIds.join("、")}`,
+            ),
+          );
+        const sources = add(
+          node("div", "topic-sources"),
+          node("small", "", `同题素材 · ${array(topic.sourceUrls).length} 条`),
+        );
+        const candidates = new Map(
+          array(state.snapshot?.candidates).map((candidate) => [
+            candidate.id,
+            candidate,
+          ]),
+        );
+        const metadata = array(topic.sourceMetadata);
+        const sourceItems = metadata.length
+          ? metadata
+          : array(topic.sourceUrls).map((url, index) => ({
+              url,
+              candidateId: array(topic.sourceCandidateIds)[index],
+            }));
+        sourceItems.forEach((source) => {
+          const candidate = candidates.get(source.candidateId);
+          const url =
+            source.url || candidate?.document?.url || candidate?.input?.url;
+          const title =
+            candidate?.document?.title || candidate?.input?.title || url;
+          const item = node("div", "topic-source");
+          item.append(link(url, title || "查看来源"));
+          const score = Number.isFinite(source.totalScore)
+            ? ` · 筛选评分 ${source.totalScore}/100`
+            : "";
+          item.append(
+            node(
+              "p",
+              "item-meta",
+              `${candidate?.sourceId || candidate?.origin || "来源"}${source.primary ? " · 主来源" : ""} · 发布于 ${time(source.publishedAt || candidate?.document?.publishedAt || candidate?.input?.publishedAt)}${score}`,
+            ),
+          );
+          const excerpt = (
+            candidate?.document?.text ||
+            candidate?.input?.text ||
+            ""
+          )
+            .replace(/\s+/g, " ")
+            .trim();
+          if (excerpt)
+            item.append(
+              node(
+                "p",
+                "source-excerpt",
+                excerpt.length > 280 ? `${excerpt.slice(0, 280)}…` : excerpt,
+              ),
+            );
+          sources.append(item);
+        });
+        if (sourceItems.length) row.append(sources);
+        if (
+          ["awaiting_approval", "needs_review"].includes(topic.status) &&
+          !topic.mergedIntoTopicId &&
+          !topic.hasContent
+        ) {
+          const endpoint = `/api/topics/${encodeURIComponent(topic.id)}/review`;
+          if (!needsReview) {
+            const actions = node("div", "topic-actions");
+            const approve = node("button", "button primary", "批准写作");
+            approve.type = "button";
+            approve.dataset.requiresReady = "true";
+            approve.addEventListener("click", () =>
+              mutate(
+                endpoint,
+                {
+                  decision: "approve",
+                  reason: "人工批准写作并送至 Postiz 草稿",
+                },
+                "已批准写作，任务将使用今日额度并生成 Postiz 草稿。",
+              ),
+            );
+            actions.append(approve);
+            actions.append(
+              actionForm(
+                "跳过此选题",
+                [field("reason", "跳过原因或备注", true)],
+                async (values) =>
+                  mutate(
+                    endpoint,
+                    { decision: "reject", reason: values.reason },
+                    "已跳过此选题。",
+                  ),
+              ),
+            );
+            row.append(actions);
+          } else {
+            const conflicts = array(topic.conflictingTopicIds);
+            const options = array(topic.conflictingTopicIds)
+              .filter((id) => id && id !== topic.id && topicById(id)?.jobId)
+              .map((id) => ({ value: id, label: topicById(id)?.title || id }));
+            if (conflicts.length && !options.length)
+              row.append(
+                node(
+                  "p",
+                  "inline-warning",
+                  "存在尚不能合并的历史冲突；请先核对关联任务。",
+                ),
+              );
+            if (options.length)
+              row.append(
+                node(
+                  "p",
+                  "reason",
+                  "选择合并会把证据加入已有内容，不会另起写作任务。",
+                ),
+              );
+            row.append(
+              actionForm(
+                "核对归组",
+                [
+                  selectField("decision", "审核决定", [
+                    { value: "reject", label: "跳过此选题" },
+                    ...(!conflicts.length || options.length
+                      ? [
+                          {
+                            value: "approve",
+                            label: conflicts.length
+                              ? "确认并合并到已有内容"
+                              : "确认后批准写作",
+                          },
+                        ]
+                      : []),
+                  ]),
+                  field("reason", "核对说明", true),
+                  ...(options.length
+                    ? [
+                        selectField(
+                          "mergeWith",
+                          "合并到已有内容（批准时必选）",
+                          [{ value: "", label: "不合并" }, ...options],
+                        ),
+                      ]
+                    : []),
+                ],
+                async (values) => {
+                  if (
+                    values.decision === "approve" &&
+                    conflicts.length &&
+                    !values.mergeWith
+                  ) {
+                    note("该选题与已有内容冲突，请选择合并目标。", "error");
+                    return;
+                  }
+                  mutate(
+                    endpoint,
+                    {
+                      decision: values.decision,
+                      reason: values.reason,
+                      ...(values.decision === "approve" && values.mergeWith
+                        ? { mergeWith: values.mergeWith }
+                        : {}),
+                    },
+                    "归组核对结果已保存。",
+                  );
+                },
+              ),
+            );
+          }
+        }
+        target.append(row);
+      });
+  }
+  function renderJobs(items) {
+    const target = $("jobs-list");
+    clear(target);
+    $("job-count").textContent = `${items.length} 项`;
+    if (!items.length)
+      return add(
+        target,
+        empty("暂无内容任务", "选题通过后，生成任务会在这里出现。"),
+      );
+    items.forEach((job) => {
+      const button = node(
+        "button",
+        `job-button ${state.selectedJob === job.id ? "selected" : ""}`,
+      );
+      button.type = "button";
+      button.title = job.id;
+      button.setAttribute(
+        "aria-current",
+        state.selectedJob === job.id ? "true" : "false",
+      );
+      add(
+        button,
+        add(
+          node("span", "job-button-top"),
+          node("strong", "", titleForJob(job.id)),
+          pill(
+            legacyNeedsApproval(job, "localState")
+              ? "awaiting_approval"
+              : job.delivery?.status || job.localState,
+          ),
+        ),
+        node(
+          "small",
+          "",
+          `${shortId(job.id)} · ${label(job.localState)} · ${time(job.updatedAt)}`,
+        ),
+      );
+      button.addEventListener("click", () => {
+        state.selectedJob = job.id;
+        renderJobs(items);
+        loadJob(job.id);
+      });
+      target.append(button);
+    });
+    if (state.selectedJob && !items.some((j) => j.id === state.selectedJob)) {
+      state.selectedJob = null;
+      state.detail = null;
+      clear($("job-detail"));
+      $("job-detail").append(empty("选择一项任务", "这里会显示任务详情。"));
+    }
+  }
+  const localDateInput = (value) => {
+    if (value == null || !Number.isFinite(Number(value))) return "";
+    const date = new Date(Number(value));
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
+  const brandCategoryNames = {
+    integration: "集成",
+    model: "模型",
+    feature: "功能",
+    pricing: "价格",
+  };
+  function brandFactForm(fact) {
+    const form = node("form", "stack-form brand-fact-form");
+    const fields = [
+      ["claim", "可确认的事实", "textarea", fact?.claim || ""],
+      ["url", "官方证据链接", "url", fact?.url || ""],
+      ["evidence", "原文摘录", "textarea", fact?.evidence || ""],
+      [
+        "keywords",
+        "来源匹配词（每行一个；模型填写完整 ID）",
+        "textarea",
+        array(fact?.keywords).join("\n"),
+      ],
+      ["category", "类别", "select", fact?.category || "feature"],
+      [
+        "observedAt",
+        "观察时间",
+        "datetime-local",
+        localDateInput(fact?.observedAt ?? Date.now()),
+      ],
+      [
+        "expiresAt",
+        "到期时间",
+        "datetime-local",
+        localDateInput(fact?.expiresAt ?? Date.now() + 90 * 86400000),
+      ],
+    ];
+    if (fact) fields.push(["reason", "本次修改或确认理由", "textarea", ""]);
+    fields.forEach(([name, caption, type, value]) => {
+      const id = `brand-${fact?.id || "new"}-${name}`;
+      const labelElement = node("label", "", caption);
+      labelElement.htmlFor = id;
+      let input;
+      if (type === "textarea") {
+        input = node("textarea");
+        input.rows = name === "claim" || name === "evidence" ? 3 : 2;
+      } else if (type === "select") {
+        input = node("select");
+        Object.entries(brandCategoryNames).forEach(([key, title]) => {
+          const option = node("option", "", title);
+          option.value = key;
+          input.append(option);
+        });
+      } else {
+        input = node("input");
+        input.type = type;
+      }
+      input.id = id;
+      input.name = name;
+      input.value = value;
+      input.required = true;
+      form.append(labelElement, input);
+    });
+    const help = node(
+      "p",
+      "item-meta",
+      "到期时间须晚于观察时间；价格事实最多 7 天，其他事实最多 90 天。创建后仍须人工核对并明确确认。",
+    );
+    form.append(help);
+    const buttons = node("div", "button-row");
+    const actions = fact
+      ? [
+          ["pending", "保存修改，待重新确认"],
+          ["verified", "我已核对证据，确认事实"],
+          ["retired", "停用事实"],
+        ]
+      : [["pending", "创建待确认事实"]];
+    actions.forEach(([status, caption]) => {
+      const button = node(
+        "button",
+        `button ${status === "verified" ? "primary" : "secondary"}`,
+        caption,
+      );
+      button.type = "submit";
+      button.value = status;
+      button.name = "status";
+      buttons.append(button);
+    });
+    form.append(buttons);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = Object.fromEntries(new window.FormData(form).entries());
+      const keywords = values.keywords
+        .split(/\r?\n|，|,/)
+        .map((word) => word.trim())
+        .filter(Boolean);
+      const observedAt = new Date(values.observedAt).getTime();
+      const expiresAt = new Date(values.expiresAt).getTime();
+      const maxDays = values.category === "pricing" ? 7 : 90;
+      if (keywords.length < 1 || keywords.length > 12) {
+        note("请填写 1 至 12 个具体匹配词，每行一个。", "error");
+        return;
+      }
+      if (!safeUrl(values.url)) {
+        note("请填写有效的 http(s) 官方证据链接。", "error");
+        return;
+      }
+      if (fact && !values.reason.trim()) {
+        note("修改、确认或停用都需要填写理由。", "error");
+        return;
+      }
+      if (
+        values.category === "model" &&
+        keywords.some(
+          (word) => !/^(?=.*\d)[a-z0-9]+(?:[-_.][a-z0-9]+)+$/i.test(word),
+        )
+      ) {
+        note("模型匹配词必须是包含版本或变体的完整模型 ID。", "error");
+        return;
+      }
+      if (
+        !Number.isFinite(observedAt) ||
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= observedAt ||
+        expiresAt - observedAt > maxDays * 86400000
+      ) {
+        note(`到期时间必须晚于观察时间，且相隔不超过 ${maxDays} 天。`, "error");
+        return;
+      }
+      const body = {
+        claim: values.claim.trim(),
+        url: values.url.trim(),
+        evidence: values.evidence.trim(),
+        keywords,
+        category: values.category,
+        observedAt,
+        expiresAt,
+      };
+      if (fact) {
+        const status = event.submitter?.value || "pending";
+        mutate(
+          `/api/brand-facts/${encodeURIComponent(fact.id)}/update`,
+          {
+            ...body,
+            status,
+            reason: values.reason.trim(),
+          },
+          status === "verified"
+            ? "事实已确认。"
+            : status === "retired"
+              ? "事实已停用。"
+              : "修改已保存，等待重新确认。",
+          {
+            reset: () => {
+              document.activeElement.blur();
+              form.closest("details").open = false;
+            },
+          },
+        );
+      } else {
+        mutate("/api/brand-facts", body, "事实已创建，等待人工确认。", {
+          reset: () => {
+            $("brand-fact-create").replaceChildren(brandFactForm());
+          },
+        });
+      }
+    });
+    return form;
+  }
+  function renderBrandFacts(items) {
+    const target = $("brand-fact-list");
+    clear(target);
+    $("brand-fact-count").textContent =
+      `${items.length} 条 · ${items.filter((fact) => fact.status === "verified" && fact.expiresAt > Date.now()).length} 条有效`;
+    if (!items.length) {
+      target.append(empty("暂无品牌事实", "添加官方证据后，逐条核对并确认。"));
+      return;
+    }
+    items.forEach((fact) => {
+      const expired = fact.expiresAt <= Date.now();
+      const row = node("article", "list-item");
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", fact.claim),
+          add(
+            node("div", "button-row"),
+            fact.status === "pending"
+              ? node("span", "pill warn", "待确认")
+              : pill(fact.status),
+            expired ? node("span", "pill danger", "已到期") : null,
+          ),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${brandCategoryNames[fact.category] || fact.category} · 观察 ${time(fact.observedAt)} · 到期 ${time(fact.expiresAt)} · 确认 ${time(fact.verifiedAt)}`,
+        ),
+        link(fact.url, "查看官方证据 ↗"),
+        node("p", "source-excerpt", `原文摘录：${fact.evidence}`),
+        node("p", "item-meta", `匹配词：${array(fact.keywords).join("、")}`),
+      );
+      const edit = node("details", "action-form");
+      edit.append(
+        node("summary", "", "编辑、重新确认或停用"),
+        brandFactForm(fact),
+      );
+      row.append(edit);
+      target.append(row);
+    });
+  }
+
+  function renderSources(items) {
+    const target = $("sources-list");
+    clear(target);
+    const active = items.filter((source) => source.enabled !== false);
+    const inactive = items.filter((source) => source.enabled === false);
+    $("source-count").textContent =
+      `${active.length} 个启用 · ${inactive.length} 个停用`;
+    if (!items.length)
+      return add(
+        target,
+        empty("暂无配置来源", "配置的自动来源及检查进度会显示在这里。"),
+      );
+    [...active, ...inactive].forEach((source) => {
+      const enabled = source.enabled !== false;
+      const row = node("article", "list-item compact");
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", source.sourceId || source.origin || "来源"),
+          enabled
+            ? pill(source.lastFailure ? "failed" : "ready")
+            : node("span", "pill neutral", "已停用"),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${source.origin || "来源"} · ${source.primary ? "主来源" : "补充来源"} · ${enabled ? "上次检查" : "历史检查"} ${source.checkedAt > 0 ? time(source.checkedAt) : "待首次检查"}${enabled ? ` · 下次 ${source.nextCheckAt > 0 ? time(source.nextCheckAt) : "待安排"}` : ""}`,
+        ),
+      );
+      if (source.lastFailure)
+        row.append(
+          node(
+            "p",
+            enabled ? "inline-warning" : "item-meta",
+            `${enabled ? "" : "历史失败记录："}${source.lastFailure}（连续失败 ${source.failureCount || 0} 次）`,
+          ),
+        );
+      target.append(row);
+    });
+  }
+
+  async function loadJob(id, { preserveForm = false } = {}) {
+    const target = $("job-detail");
+    const sameJob = state.detail?.job?.id === id;
+    if (sameJob && preserveForm && activeFormIn("job-detail")) return;
+    if (!sameJob) {
+      clear(target);
+      target.append(empty("正在加载任务", "读取原稿和 Postiz 状态…"));
+    }
+    try {
+      const detail = await request(`/api/jobs/${encodeURIComponent(id)}`);
+      if (state.selectedJob !== id) return;
+      if (sameJob && preserveForm && activeFormIn("job-detail")) return;
+      state.detail = detail;
+      renderJobDetail(detail);
+      setBusy(state.busy);
+    } catch (error) {
+      if (state.selectedJob === id) {
+        if (sameJob) {
+          target.querySelector("#detail-refresh-error")?.remove();
+          const warning = node(
+            "div",
+            "alert-block",
+            `详情更新失败：${error.message}。以下是上次读取的内容，请刷新后再操作。`,
+          );
+          warning.id = "detail-refresh-error";
+          target.prepend(warning);
+          target.querySelectorAll(".actions button").forEach((button) => {
+            button.disabled = true;
+          });
+        } else {
+          clear(target);
+          target.append(empty("任务加载失败", error.message));
+        }
+      }
+    }
+  }
+  function renderJobDetail(detail) {
+    const target = $("job-detail");
+    clear(target);
+    const job = detail.job || {};
+    const reportJob =
+      array(state.snapshot?.report?.jobs?.items).find(
+        (item) => item.id === job.id,
+      ) || {};
+    const delivery =
+      (legacyNeedsApproval(job, "state")
+        ? "awaiting_approval"
+        : reportJob.delivery?.status) ||
+      (job.state === "unknown"
+        ? "unknown"
+        : job.postizState?.toLowerCase() || job.state);
+    const heading = node("h3", "", titleForJob(job.id));
+    heading.title = job.id || "";
+    add(
+      target,
+      add(
+        node("div", "detail-head"),
+        add(node("div"), node("span", "eyebrow", "TASK DETAIL"), heading),
+        pill(delivery),
+      ),
+      node(
+        "p",
+        "item-meta",
+        `${shortId(job.id)} · ${label(job.state)} · ${job.mode === "draft" ? "草稿模式" : "排期模式"} · 更新 ${time(job.updatedAt)}`,
+      ),
+    );
+    if (job.lastError)
+      target.append(node("p", "inline-warning", job.lastError));
+    if (job.state === "unknown")
+      target.append(
+        node(
+          "div",
+          "alert-block",
+          "提交结果未知。不要再次提交。先在 Postiz 核对是否已创建内容，再用现有 Postiz ID 同步绑定。",
+        ),
+      );
+    const facts = node("dl", "fact-grid");
+    [
+      ["Postiz ID", job.postizId],
+      ["Postiz 状态", job.postizState],
+      ["平台文章 ID", job.platformPostId],
+      ["计划时间", job.scheduledAt ? time(job.scheduledAt) : null],
+    ].forEach(([name, value]) =>
+      add(facts, node("dt", "", name), node("dd", "", text(value))),
+    );
+    target.append(facts);
+    if (job.platformUrl) target.append(link(job.platformUrl, "查看平台文章 ↗"));
+    const postiz = safeUrl(detail.postizUrl || state.snapshot?.postizUrl);
+    if (postiz) target.append(link(postiz, "打开 Postiz 完成最终审阅 ↗"));
+    section(
+      target,
+      "当前检查稿",
+      reportJob.originalPost ||
+        job.output?.post ||
+        job.input?.revision?.post ||
+        "暂无原稿",
+      "pre-wrap",
+    );
+    const output =
+      job.output && typeof job.output === "object" ? job.output : null;
+    const checks =
+      output?.quality ||
+      output?.check ||
+      output?.checks ||
+      output?.qualityCheck;
+    if (checks)
+      section(
+        target,
+        "检查结果",
+        typeof checks === "string"
+          ? checks
+          : `${checks.approved === true ? "检查通过" : checks.approved === false ? "检查未通过" : "等待确认"}${array(checks.reasons).length ? `\n${checks.reasons.join("\n")}` : ""}`,
+        "pre-wrap",
+      );
+    const sources = array(job.input?.sources);
+    if (sources.length) {
+      const box = add(node("div", "detail-section"), node("h4", "", "来源"));
+      sources.forEach((source) =>
+        box.append(link(source.url, source.title || source.url)),
+      );
+      target.append(box);
+    }
+    const verifiedFacts = array(job.input?.brand?.verifiedFacts);
+    const factBox = add(
+      node("div", "detail-section"),
+      node("h4", "", "本次选用的已确认品牌事实"),
+    );
+    if (verifiedFacts.length) {
+      verifiedFacts.forEach((fact) =>
+        factBox.append(
+          add(
+            node("div", "topic-source"),
+            node("p", "reason", fact.claim),
+            link(fact.url, "核对事实证据 ↗"),
+            fact.evidence
+              ? node("p", "source-excerpt", `原文摘录：${fact.evidence}`)
+              : null,
+            fact.observedAt || fact.expiresAt
+              ? node(
+                  "p",
+                  "item-meta",
+                  `观察 ${time(fact.observedAt)} · 到期 ${time(fact.expiresAt)}`,
+                )
+              : null,
+          ),
+        ),
+      );
+    } else {
+      factBox.append(
+        node(
+          "p",
+          "muted",
+          "本次来源没有匹配到已确认且有效的品牌事实；内容可聚焦行业信息，不强制提及 Tokenhot，也不能声明自有产品能力。",
+        ),
+      );
+    }
+    target.append(factBox);
+    const latest =
+      array(detail.observations).at(-1) || reportJob.latestObservation;
+    if (latest) {
+      section(
+        target,
+        "Postiz 最近观察",
+        `${time(latest.observedAt)} · ${text(latest.postizState)}${latest.content ? `\n\n${latest.content}` : ""}`,
+        "pre-wrap",
+      );
+      if (reportJob.edited !== null && reportJob.edited !== undefined)
+        target.append(
+          node(
+            "p",
+            "item-meta",
+            reportJob.edited
+              ? "Postiz 内容与原稿不同"
+              : "Postiz 内容与原稿一致",
+          ),
+        );
+    }
+    const history = array(detail.history);
+    if (history.length) {
+      const box = add(
+        node("div", "detail-section"),
+        node("h4", "", "操作历史"),
+      );
+      history.forEach((h) => {
+        box.append(
+          node(
+            "p",
+            "history-line",
+            `${time(h.createdAt)} · ${h.eventType || h.type || "记录"} · ${h.reason || ""}`,
+          ),
+        );
+        const before = h.before?.output;
+        const after = h.after?.output;
+        if (typeof before?.post === "string")
+          box.append(historicalOutput("查看修改前内容/检查结果", before));
+        if (
+          typeof after?.post === "string" &&
+          (after.post !== before?.post ||
+            JSON.stringify(after.quality) !== JSON.stringify(before?.quality))
+        )
+          box.append(historicalOutput("查看修改后内容/检查结果", after));
+      });
+      target.append(box);
+    }
+    const feedback = array(detail.feedback);
+    if (feedback.length) {
+      const box = add(node("div", "detail-section"), node("h4", "", "反馈"));
+      feedback.forEach((f) =>
+        box.append(
+          node(
+            "p",
+            "history-line",
+            `${time(f.createdAt)} · ${label(f.kind)} · ${f.reason}`,
+          ),
+        ),
+      );
+      target.append(box);
+    }
+    const events = array(detail.events);
+    if (events.length) {
+      const box = add(
+        node("div", "detail-section"),
+        node("h4", "", "流程事件"),
+      );
+      events.forEach((e) =>
+        box.append(
+          node(
+            "p",
+            "history-line",
+            `${time(e.createdAt)} · ${stageNames[e.stage] || e.stage} · ${label(e.status)}${e.detail ? ` · ${e.detail}` : ""}`,
+          ),
+        ),
+      );
+      target.append(box);
+    }
+    renderJobActions(target, job);
+  }
+  function section(parent, title, body, cls = "") {
+    parent.append(
+      add(
+        node("div", "detail-section"),
+        node("h4", "", title),
+        node("div", cls, body),
+      ),
+    );
+  }
+  function historicalOutput(caption, output) {
+    const details = node("details", "action-form");
+    details.append(
+      node("summary", "", caption),
+      node("div", "pre-wrap history-content", output.post),
+    );
+    const checks =
+      output.quality || output.check || output.checks || output.qualityCheck;
+    if (checks)
+      details.append(
+        node(
+          "div",
+          "pre-wrap history-content",
+          `检查结果：${typeof checks === "string" ? checks : JSON.stringify(checks, null, 2)}`,
+        ),
+      );
+    return details;
+  }
+  function renderJobActions(target, job) {
+    const actions = add(
+      node("div", "detail-section actions"),
+      node("h4", "", "处理此任务"),
+    );
+    const pendingApproval = legacyNeedsApproval(job, "state");
+    if (pendingApproval) {
+      actions.append(
+        node(
+          "p",
+          "reason",
+          job.mode === "schedule"
+            ? "这是升级前留下的排期任务。批准时会转成 Postiz 草稿，由你在 Postiz 审阅并排期。"
+            : "这是升级前留下的任务。批准后继续处理；尚未生成内容时会使用写作额度。",
+        ),
+      );
+      const approve = node(
+        "button",
+        "button primary",
+        job.mode === "schedule" ? "转为草稿并批准" : "批准写作",
+      );
+      approve.type = "button";
+      approve.dataset.requiresReady = "true";
+      approve.addEventListener("click", () =>
+        mutate(
+          `/api/jobs/${encodeURIComponent(job.id)}/review`,
+          {
+            decision: "approve",
+            reason:
+              job.mode === "schedule"
+                ? "人工批准将旧排期任务转为 Postiz 草稿"
+                : "人工批准继续处理并送至 Postiz 草稿",
+            ...(job.mode === "schedule" ? { convertToDraft: true } : {}),
+          },
+          "已批准继续处理，内容将送至 Postiz 草稿。",
+        ),
+      );
+      actions.append(approve);
+      actions.append(
+        actionForm(
+          "跳过此任务",
+          [field("reason", "跳过原因或备注", true)],
+          async (values) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/review`,
+              { decision: "reject", reason: values.reason },
+              "已跳过此任务。",
+            ),
+        ),
+      );
+    }
+    if (job.state === "ready" && job.mode === "draft" && !pendingApproval)
+      actions.append(
+        actionForm("提交到 Postiz 草稿", [], async () =>
+          mutate(
+            `/api/jobs/${encodeURIComponent(job.id)}/submit`,
+            {},
+            "已发起提交，请核对 Postiz 回执。",
+          ),
+        ),
+      );
+    const canRevise =
+      job.writingApproved !== false &&
+      job.mode === "draft" &&
+      ["ready", "rejected", "failed"].includes(job.state) &&
+      !job.postizId &&
+      !job.postizState &&
+      !job.platformPostId &&
+      !job.platformUrl &&
+      !job.leaseToken;
+    if (canRevise) {
+      actions.append(
+        node(
+          "p",
+          "reason",
+          "修改或重新生成都会使用一次今日写作额度。运行后须通过内容检查，才会送到 Postiz 草稿。",
+        ),
+      );
+      const originalPost =
+        typeof job.output?.post === "string" ? job.output.post : "";
+      if (originalPost.trim())
+        actions.append(
+          actionForm(
+            "直接编辑正文并重新检查",
+            [
+              textareaField("post", "编辑后的完整正文", true, originalPost),
+              field("reason", "修改原因（单独记录到审计）", true),
+            ],
+            (values) =>
+              mutate(
+                `/api/jobs/${encodeURIComponent(job.id)}/revise`,
+                { kind: "edit", post: values.post, reason: values.reason },
+                "修改已排队，完成检查后将送至 Postiz 草稿。",
+              ),
+          ),
+        );
+      actions.append(
+        actionForm(
+          "提出实质改写要求并重新生成",
+          [
+            textareaField(
+              "instructions",
+              "具体改写要求（将进入生成提示）",
+              true,
+            ),
+            field("reason", "重新生成原因（单独记录到审计）", true),
+          ],
+          (values) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/revise`,
+              {
+                kind: "rewrite",
+                instructions: values.instructions,
+                reason: values.reason,
+              },
+              "重新生成已排队，完成检查后将送至 Postiz 草稿。",
+            ),
+        ),
+      );
+    }
+    if (
+      ["failed", "rejected"].includes(job.state) &&
+      !job.postizId &&
+      !pendingApproval
+    )
+      actions.append(
+        actionForm(
+          "恢复失败任务（不修改正文）",
+          [
+            field("reason", "恢复原因（仅记录日志，不作为改写要求）", true),
+            checkbox("refreshBrand", "使用最新品牌配置"),
+            checkbox("toDraft", "改为草稿模式"),
+          ],
+          async (v) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/retry`,
+              {
+                reason: v.reason,
+                refreshBrand: v.refreshBrand,
+                toDraft: v.toDraft,
+              },
+              "任务已提交重试。",
+            ),
+        ),
+      );
+    if (job.state === "submitted")
+      actions.append(
+        actionForm("同步 Postiz 状态", [], async () =>
+          mutate(
+            `/api/jobs/${encodeURIComponent(job.id)}/sync`,
+            {},
+            "同步已完成。",
+          ),
+        ),
+      );
+    if (job.state === "unknown")
+      actions.append(
+        actionForm(
+          "绑定现有 Postiz 内容",
+          [
+            field("postizId", "已有 Postiz ID", true),
+            checkbox("acceptEdited", "核对后接受 Postiz 中已修改的内容"),
+            field("reason", "核对说明（接受修改时必填）", false),
+          ],
+          async (v) =>
+            mutate(
+              `/api/jobs/${encodeURIComponent(job.id)}/sync`,
+              {
+                postizId: v.postizId,
+                acceptEdited: v.acceptEdited,
+                ...(v.reason ? { reason: v.reason } : {}),
+              },
+              "现有 Postiz 内容已绑定。",
+            ),
+        ),
+      );
+    actions.append(
+      actionForm(
+        "记录反馈",
+        [
+          selectField("kind", "反馈类型", [
+            { value: "edit", label: "修改" },
+            { value: "reject", label: "拒绝" },
+            { value: "note", label: "备注" },
+          ]),
+          field("reason", "原因或备注", true),
+        ],
+        async (v) =>
+          mutate(
+            `/api/jobs/${encodeURIComponent(job.id)}/feedback`,
+            { kind: v.kind, reason: v.reason },
+            "反馈已记录。",
+          ),
+      ),
+    );
+    target.append(actions);
+  }
+  function field(name, caption, required, value = "") {
+    return { type: "text", name, caption, required, value };
+  }
+  function textareaField(name, caption, required, value = "") {
+    return { type: "textarea", name, caption, required, value };
+  }
+  function checkbox(name, caption) {
+    return { type: "checkbox", name, caption };
+  }
+  function selectField(name, caption, options) {
+    return { type: "select", name, caption, options };
+  }
+  function actionForm(caption, fields, submit) {
+    const details = node("details", "action-form");
+    details.append(node("summary", "", caption));
+    const form = node("form", "stack-form small-form");
+    fields.forEach((spec) => {
+      const id = `f-${Math.random().toString(36).slice(2)}`;
+      if (spec.type === "checkbox") {
+        const wrap = node("label", "check-field");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = spec.name;
+        wrap.append(input, document.createTextNode(spec.caption));
+        form.append(wrap);
+        return;
+      }
+      const lbl = node("label", "", spec.caption);
+      lbl.htmlFor = id;
+      form.append(lbl);
+      let input;
+      if (spec.type === "select") {
+        input = document.createElement("select");
+        spec.options.forEach((option) => {
+          const opt = document.createElement("option");
+          opt.value = option.value;
+          opt.textContent = option.label;
+          input.append(opt);
+        });
+      } else if (spec.type === "textarea") {
+        input = node("textarea");
+        input.rows = spec.name === "post" ? 8 : 4;
+        input.value = spec.value || "";
+        input.required = !!spec.required;
+      } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.value = spec.value || "";
+        input.required = !!spec.required;
+      }
+      input.id = id;
+      input.name = spec.name;
+      form.append(input);
+    });
+    const button = node("button", "button secondary", caption);
+    button.type = "submit";
+    form.append(button);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = {};
+      fields.forEach((spec) => {
+        const input = form.elements.namedItem(spec.name);
+        values[spec.name] =
+          spec.type === "checkbox" ? input.checked : input.value.trim();
+      });
+      const missing = fields.find(
+        (spec) => spec.required && !values[spec.name],
+      );
+      if (missing) {
+        note(`请填写${missing.caption}。`, "error");
+        form.elements.namedItem(missing.name).focus();
+        return;
+      }
+      if (values.acceptEdited && !values.reason) {
+        note("接受 Postiz 中的修改需要填写核对说明。", "error");
+        form.elements.namedItem("reason").focus();
+        return;
+      }
+      submit(values);
+    });
+    details.append(form);
+    return details;
+  }
+
+  $("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = $("password").value;
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    $("login-error").hidden = true;
+    try {
+      await request("/api/login", "POST", { password });
+      $("password").value = "";
+      await refresh();
+    } catch (error) {
+      $("login-error").textContent = error.message;
+      $("login-error").hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $("logout").addEventListener("click", async () => {
+    try {
+      await request("/api/logout", "POST", {});
+    } catch {
+      /* Still clear the visible session. */
+    }
+    state.snapshot = null;
+    state.selectedJob = null;
+    showLogin();
+  });
+  $("refresh").addEventListener("click", () => refresh({ detail: true }));
+  $("social-review-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-social-tab]")?.dataset.socialTab;
+    if (!tab || !state.snapshot?.competitorMode) return;
+    state.socialTab = tab;
+    renderSocialTopics(state.snapshot);
+    setBusy(state.busy);
+  });
+  $("run").addEventListener("click", () =>
+    mutate("/api/run", {}, "流程已启动，进度会自动更新。"),
+  );
+  $("pause").addEventListener("click", () =>
+    mutate(
+      "/api/pause",
+      { paused: !state.snapshot?.runtime?.paused },
+      state.snapshot?.runtime?.paused ? "处理已恢复。" : "处理已暂停。",
+    ),
+  );
+  $("material-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const source = { url: $("material-url").value.trim() };
+    if ($("material-title").value.trim())
+      source.title = $("material-title").value.trim();
+    if ($("material-text").value.trim())
+      source.text = $("material-text").value.trim();
+    if ($("material-date").value)
+      source.publishedAt = new Date($("material-date").value).toISOString();
+    mutate("/api/materials", { sources: [source] }, "素材已添加。", {
+      reset: () => $("material-form").reset(),
+    });
+  });
+  $("batch-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    let sources;
+    try {
+      sources = JSON.parse($("batch-json").value);
+      if (
+        !Array.isArray(sources) ||
+        !sources.length ||
+        sources.some(
+          (item) => !item || typeof item.url !== "string" || !safeUrl(item.url),
+        )
+      )
+        throw new Error("请输入包含有效 http(s) 链接的非空素材数组。");
+    } catch (error) {
+      note(
+        error instanceof SyntaxError ? "JSON 格式不正确。" : error.message,
+        "error",
+      );
+      return;
+    }
+    mutate("/api/materials", { sources }, "批量素材已添加。", {
+      reset: () => $("batch-form").reset(),
+    });
+  });
+  $("brand-fact-create").append(brandFactForm());
+  refresh();
+  state.timer = window.setInterval(() => {
+    if (!document.hidden && $("login-view").hidden)
+      refresh({
+        detail: !!state.selectedJob && !activeFormIn("job-detail"),
+        quiet: true,
+        preserveForm: true,
+      });
+  }, 30000);
+})();

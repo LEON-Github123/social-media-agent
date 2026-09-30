@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": "dist-postiz",
+    "declaration": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/postiz/**/*.ts"],
+  "exclude": ["src/postiz/tests/**", "node_modules", "dist", "dist-postiz"]
+}
