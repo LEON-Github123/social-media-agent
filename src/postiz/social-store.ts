@@ -207,6 +207,16 @@ export abstract class SocialContentStore extends ContentOperationsStore {
     );
   }
 
+  private isSocialEvaluationProtected(candidate: ContentCandidate): boolean {
+    // A linked proposal must not be evaluated twice, even while it remains
+    // visible for human approval in the current selection view.
+    return (
+      this.isSocialProtected(candidate) ||
+      Boolean(candidate.topicId) ||
+      ["selected", "rejected"].includes(candidate.status)
+    );
+  }
+
   listSocialStates(
     brandId: string,
     activeSourceIds?: string[],
@@ -257,6 +267,7 @@ export abstract class SocialContentStore extends ContentOperationsStore {
           (social && !recent)
         )
           tier = "history";
+        else if (held) tier = "watch";
         else if (row?.error_code) tier = "error";
         else if (assessment) {
           if (
@@ -320,7 +331,7 @@ export abstract class SocialContentStore extends ContentOperationsStore {
       .filter((candidate) => {
         if (
           !activeSourceIds.includes(candidate.sourceId ?? "") ||
-          this.isSocialProtected(candidate)
+          this.isSocialEvaluationProtected(candidate)
         )
           return false;
         const social = this.latestSocialSnapshot(candidate.id);
@@ -347,7 +358,12 @@ export abstract class SocialContentStore extends ContentOperationsStore {
     this.transaction(() => {
       for (const id of candidateIds) {
         const candidate = this.getCandidate(id);
-        if (!candidate || this.isSocialProtected(candidate))
+        if (
+          !candidate ||
+          candidate.origin !== "twitterapi-user" ||
+          this.isSocialEvaluationProtected(candidate) ||
+          !["new", "failed", "needs_review"].includes(candidate.status)
+        )
           throw new JobConflictError("该素材已被人工处理");
         const result = this.db
           .prepare(
@@ -372,9 +388,28 @@ export abstract class SocialContentStore extends ContentOperationsStore {
         if (
           !candidate ||
           candidate.brandId !== brandId ||
-          this.isSocialProtected(candidate)
+          candidate.origin !== "twitterapi-user" ||
+          this.isSocialEvaluationProtected(candidate) ||
+          Boolean(
+            this.db
+              .prepare(
+                "SELECT 1 FROM social_candidates WHERE candidate_id=? AND held=1",
+              )
+              .get(id),
+          ) ||
+          !["new", "failed", "needs_review"].includes(candidate.status)
         )
           throw new JobConflictError("人工决定已保存，不能被自动评估覆盖");
+      }
+      // The original generic selector only accepts status=new. Historical
+      // unlinked model failures are safe to retry, and this reset rolls back
+      // with the whole selection if any later validation fails.
+      for (const decision of result.selection.candidateDecisions) {
+        this.db
+          .prepare(
+            "UPDATE content_candidates SET status='new',updated_at=? WHERE id=? AND status IN ('failed','needs_review') AND topic_id IS NULL AND legacy_conflict=0",
+          )
+          .run(this.now(), decision.candidateId);
       }
       this.saveSelection({ brandId, result: result.selection });
       for (const assessment of result.assessments.filter(

@@ -309,6 +309,11 @@ void test("a human-approved social topic stays decided when stale automation tri
   };
   store.saveSocialSelection(brandId, result);
   assert.equal(store.getTopic("social-123")?.status, "awaiting_approval");
+  assert.equal(store.listSocialStates(brandId)[0].tier, "watch");
+  assert.deepEqual(
+    store.socialEvaluationCandidates(brandId, ["competitor-a"]),
+    [],
+  );
   store.reviewSocialTopic("social-123", {
     brand: {
       id: brandId,
@@ -337,4 +342,335 @@ void test("a human-approved social topic stays decided when stale automation tri
     "解释接口接入的取舍。",
   );
   assert.equal(reopened.listSocialStates(brandId)[0].tier, "history");
+});
+
+void test("old unlinked review and fresh social decisions commit together without resetting attempts", (t) => {
+  const store = fixture(t).open();
+  const old = socialCandidate(store, "123");
+  const fresh = socialCandidate(store, "456");
+  store.recordSocialObservation(old.id, snapshot("123"));
+  store.recordSocialObservation(fresh.id, snapshot("456"));
+  store.saveSelection({
+    brandId,
+    result: {
+      modelCalls: 1,
+      warnings: [],
+      topics: [],
+      candidateDecisions: [
+        {
+          candidateId: old.id,
+          status: "needs_review",
+          identity: null,
+          scores: {
+            relevance: 0,
+            evidence: 0,
+            developerValue: 0,
+            freshness: null,
+          },
+          totalScore: 0,
+          reason: "旧筛选输出无效，需要重新评估。",
+        },
+      ],
+    },
+  });
+  assert.equal(store.getCandidate(old.id)?.status, "needs_review");
+  store.beginSocialEvaluation([old.id, fresh.id]);
+  const result: SocialSelectionResult = {
+    selection: {
+      modelCalls: 1,
+      warnings: [],
+      topics: [],
+      candidateDecisions: [old, fresh].map((candidate) => ({
+        candidateId: candidate.id,
+        status: "rejected" as const,
+        identity: null,
+        scores: {
+          relevance: 20,
+          evidence: 20,
+          developerValue: 20,
+          freshness: null,
+        },
+        totalScore: 20,
+        reason: "与目标受众无关。",
+      })),
+    },
+    assessments: [old, fresh].map((candidate) => ({
+      candidateId: candidate.id,
+      title: "低相关性素材",
+      summary: "与受众无关。",
+      reason: "与目标受众无关。",
+      angle: "不建议采用。",
+      factGaps: [],
+      relevance: 20,
+      reusability: 20,
+      kind: "creative" as const,
+      requiresBrandFacts: false,
+      excludedReason: "与受众无关。",
+    })),
+    failures: [],
+  };
+  store.saveSocialSelection(brandId, result);
+  assert.equal(store.getCandidate(old.id)?.status, "rejected");
+  assert.equal(store.getCandidate(fresh.id)?.status, "rejected");
+  assert.equal(
+    store.listSocialStates(brandId).filter((state) => state.assessment).length,
+    2,
+  );
+  assert.deepEqual(
+    store
+      .listSocialStates(brandId)
+      .map((state) => state.attempts)
+      .sort(),
+    [1, 1],
+  );
+});
+
+void test("linked review and prior skipped material are not silently reevaluated", (t) => {
+  const store = fixture(t).open();
+  const linked = socialCandidate(store, "123");
+  const skipped = socialCandidate(store, "456");
+  for (const candidate of [linked, skipped])
+    store.recordSocialObservation(
+      candidate.id,
+      snapshot(candidate.id === linked.id ? "123" : "456"),
+    );
+  const identity = {
+    entity: "small",
+    product: "social:123",
+    version: null,
+    eventType: "other" as const,
+    eventDate: null,
+    primaryUrl: linked.input.url,
+  };
+  store.saveSelection({
+    brandId,
+    result: {
+      modelCalls: 1,
+      warnings: [],
+      candidateDecisions: [
+        {
+          candidateId: linked.id,
+          status: "needs_review",
+          identity,
+          topicId: "pending-social-123",
+          scores: {
+            relevance: 50,
+            evidence: 50,
+            developerValue: 50,
+            freshness: null,
+          },
+          totalScore: 50,
+          reason: "待人工核对。",
+        },
+        {
+          candidateId: skipped.id,
+          status: "rejected",
+          identity: null,
+          scores: {
+            relevance: 0,
+            evidence: 0,
+            developerValue: 0,
+            freshness: null,
+          },
+          totalScore: 0,
+          reason: "人工已跳过。",
+        },
+      ],
+      topics: [
+        {
+          id: "pending-social-123",
+          identityKey: "pending-social-123",
+          identity,
+          title: "待核对的素材",
+          candidateIds: [linked.id],
+          sourceCandidateIds: [linked.id],
+          sourceMetadata: [
+            { candidateId: linked.id, url: linked.input.url, primary: false },
+          ],
+          status: "needs_review",
+          reason: "待人工核对。",
+        },
+      ],
+    },
+  });
+  assert.deepEqual(
+    store.socialEvaluationCandidates(brandId, ["competitor-a"]),
+    [],
+  );
+  assert.throws(
+    () => store.beginSocialEvaluation([linked.id]),
+    JobConflictError,
+  );
+  assert.throws(
+    () => store.beginSocialEvaluation([skipped.id]),
+    JobConflictError,
+  );
+  assert.equal(store.getCandidate(linked.id)?.topicId, "pending-social-123");
+  assert.equal(store.getCandidate(skipped.id)?.status, "rejected");
+});
+
+void test("an in-flight model result cannot override a newly held candidate", (t) => {
+  const store = fixture(t).open();
+  const candidate = socialCandidate(store, "123");
+  store.recordSocialObservation(candidate.id, snapshot("123"));
+  store.beginSocialEvaluation([candidate.id]);
+  store.holdSocialCandidate(
+    brandId,
+    candidate.id,
+    true,
+    "Human will review later",
+  );
+  const identity = {
+    entity: "small",
+    product: "social:123",
+    version: null,
+    eventType: "other" as const,
+    eventDate: null,
+    primaryUrl: candidate.input.url,
+  };
+  const result: SocialSelectionResult = {
+    selection: {
+      modelCalls: 1,
+      warnings: [],
+      candidateDecisions: [
+        {
+          candidateId: candidate.id,
+          status: "selected",
+          identity,
+          topicId: "social-held-123",
+          scores: {
+            relevance: 80,
+            evidence: 80,
+            developerValue: 80,
+            freshness: null,
+          },
+          totalScore: 80,
+          reason: "可用于开发者分析。",
+        },
+      ],
+      topics: [
+        {
+          id: "social-held-123",
+          identityKey: "social-held-123",
+          identity,
+          title: "开发者分析",
+          candidateIds: [candidate.id],
+          sourceCandidateIds: [candidate.id],
+          sourceMetadata: [
+            {
+              candidateId: candidate.id,
+              url: candidate.input.url,
+              primary: false,
+            },
+          ],
+          status: "ready",
+          reason: "需人工审批。",
+        },
+      ],
+    },
+    assessments: [
+      {
+        candidateId: candidate.id,
+        title: "开发者分析",
+        summary: "接口取舍。",
+        reason: "可用于开发者分析。",
+        angle: "比较集成取舍。",
+        factGaps: [],
+        relevance: 80,
+        reusability: 80,
+        kind: "creative",
+        requiresBrandFacts: false,
+        excludedReason: null,
+      },
+    ],
+    failures: [],
+  };
+  assert.throws(
+    () => store.saveSocialSelection(brandId, result),
+    JobConflictError,
+  );
+  assert.equal(store.getTopic("social-held-123"), null);
+  assert.equal(store.listSocialStates(brandId)[0].held, true);
+  assert.equal(store.listSocialStates(brandId)[0].tier, "watch");
+  assert.equal(store.listSocialStates(brandId)[0].errorCode, "provider");
+  assert.equal(store.listSocialStates(brandId)[0].assessment, null);
+  assert.equal(store.listSocialStates(brandId)[0].attempts, 1);
+});
+
+void test("an invalid mixed batch rolls back the temporary legacy status reset", (t) => {
+  const store = fixture(t).open();
+  const old = socialCandidate(store, "123");
+  const fresh = socialCandidate(store, "456");
+  for (const [candidate, tweetId] of [
+    [old, "123"],
+    [fresh, "456"],
+  ] as const)
+    store.recordSocialObservation(candidate.id, snapshot(tweetId));
+  store.saveSelection({
+    brandId,
+    result: {
+      modelCalls: 1,
+      warnings: [],
+      topics: [],
+      candidateDecisions: [
+        {
+          candidateId: old.id,
+          status: "needs_review",
+          identity: null,
+          scores: {
+            relevance: 0,
+            evidence: 0,
+            developerValue: 0,
+            freshness: null,
+          },
+          totalScore: 0,
+          reason: "旧模型未能判断。",
+        },
+      ],
+    },
+  });
+  const result: SocialSelectionResult = {
+    assessments: [],
+    failures: [],
+    selection: {
+      modelCalls: 1,
+      warnings: [],
+      topics: [],
+      candidateDecisions: [
+        {
+          candidateId: old.id,
+          status: "rejected",
+          identity: null,
+          scores: {
+            relevance: 0,
+            evidence: 0,
+            developerValue: 0,
+            freshness: null,
+          },
+          totalScore: 0,
+          reason: "不适用。",
+        },
+        {
+          candidateId: fresh.id,
+          status: "selected",
+          identity: null,
+          topicId: "missing-topic",
+          scores: {
+            relevance: 80,
+            evidence: 80,
+            developerValue: 80,
+            freshness: null,
+          },
+          totalScore: 80,
+          reason: "待保存。",
+        },
+      ],
+    },
+  };
+  assert.throws(
+    () => store.saveSocialSelection(brandId, result),
+    JobConflictError,
+  );
+  assert.equal(store.getCandidate(old.id)?.status, "needs_review");
+  assert.equal(store.getCandidate(fresh.id)?.status, "new");
 });
