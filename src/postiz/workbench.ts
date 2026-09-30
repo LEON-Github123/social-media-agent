@@ -209,14 +209,15 @@ export class Workbench {
             observations: this.store.listObservations({ brandId: brand.id }),
           })
         : null;
+    const socialCandidates =
+      brand && this.config.competitorMode
+        ? this.store.listSocialStates(brand.id, [...activeSourceIds])
+        : [];
     return {
       brand: brand ? { id: brand.id, name: brand.name } : null,
       brandFacts: brand ? this.store.listBrandFacts(brand.id) : [],
       competitorMode: Boolean(this.config.competitorMode),
-      socialCandidates:
-        brand && this.config.competitorMode
-          ? this.store.listSocialStates(brand.id, [...activeSourceIds])
-          : [],
+      socialCandidates,
       socialQuotas:
         brand && this.config.competitorMode
           ? this.store.socialQuotas(brand.id)
@@ -235,10 +236,15 @@ export class Workbench {
               this.store.latestSocialSnapshot(id),
             )
               ? {
-                  brandReadiness: this.store.socialTopicReadiness(
-                    brand,
-                    topic.id,
-                  ),
+                  brandReadiness: (() => {
+                    const { ready, missing } = this.store.socialTopicReadiness(
+                      brand,
+                      topic.id,
+                      undefined,
+                      socialCandidates,
+                    );
+                    return { ready, missing };
+                  })(),
                 }
               : {}),
           }))

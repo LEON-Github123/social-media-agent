@@ -13,6 +13,7 @@ import {
 import type { GenerationQuotaOptions } from "./operations-store.js";
 import { BrandKnowledgeStore } from "./brand-knowledge.js";
 import type { WritingIntent } from "./social-store.js";
+import type { SocialCandidateState } from "./social-types.js";
 import { JobConflictError, LeaseLostError } from "./store-errors.js";
 export { JobConflictError, LeaseLostError } from "./store-errors.js";
 export type {
@@ -817,12 +818,13 @@ export class ContentJobStore extends BrandKnowledgeStore {
     brand: BrandConfig,
     topicId: string,
     writingAngle?: string,
+    socialStates?: SocialCandidateState[],
   ) {
     const topic = this.getTopic(topicId);
     if (!topic || topic.brandId !== brand.id)
       throw new JobConflictError("选题不存在");
-    const states = this.listSocialStates(brand.id).filter((state) =>
-      topic.sourceCandidateIds.includes(state.candidateId),
+    const states = (socialStates ?? this.listSocialStates(brand.id)).filter(
+      (state) => topic.sourceCandidateIds.includes(state.candidateId),
     );
     const intent: WritingIntent = {
       purpose: "brand_original",
