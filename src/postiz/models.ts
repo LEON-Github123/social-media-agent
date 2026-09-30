@@ -21,6 +21,20 @@ export interface ContentModel {
   invoke(request: ModelRequest): Promise<string>;
 }
 
+export type ContentModelErrorCode =
+  "timeout" | "rate_limit" | "truncated" | "provider";
+
+/** Safe classification only; never retain a provider error body or request. */
+export class ContentModelError extends Error {
+  constructor(
+    public readonly code: ContentModelErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ContentModelError";
+  }
+}
+
 export interface ModelSettings {
   provider: "openai" | "anthropic";
   model: string;
@@ -124,15 +138,42 @@ export function createContentModel(input: ModelSettings): ContentModel {
             runName: `content-${request.task}`,
           },
         );
+        const metadata = response.response_metadata as Record<string, unknown>;
+        const finishReason = metadata?.finish_reason ?? metadata?.stop_reason;
+        if (finishReason === "length" || finishReason === "max_tokens")
+          throw new ContentModelError(
+            "truncated",
+            `Content model ${request.task} response was truncated`,
+          );
         return modelText(response.content);
       } catch (error) {
+        if (error instanceof ContentModelError) throw error;
         // Provider errors may contain request bodies or credentials. The worker
         // logs only a safe stage/status and never the raw upstream response.
         const status =
           typeof error === "object" && error !== null && "status" in error
             ? Number(error.status)
             : undefined;
-        throw new Error(
+        const name =
+          typeof error === "object" && error !== null && "name" in error
+            ? String(error.name)
+            : "";
+        const code =
+          typeof error === "object" && error !== null && "code" in error
+            ? String(error.code)
+            : "";
+        const classification: ContentModelErrorCode =
+          status === 429
+            ? "rate_limit"
+            : status === 408 ||
+                /^(?:AbortError|TimeoutError)$/i.test(name) ||
+                /^(?:ETIMEDOUT|ESOCKETTIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/i.test(
+                  code,
+                )
+              ? "timeout"
+              : "provider";
+        throw new ContentModelError(
+          classification,
           `Content model ${request.task} request failed` +
             (status && Number.isInteger(status) ? ` (HTTP ${status})` : ""),
         );

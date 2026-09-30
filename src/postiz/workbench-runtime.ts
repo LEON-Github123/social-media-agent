@@ -12,8 +12,13 @@ import {
   type SourceDocument,
 } from "./sources.js";
 import { collectSources } from "./collector.js";
+import {
+  collectCompetitorSources,
+  selectSocialAndQueue,
+} from "./social-pipeline.js";
 import { selectAndQueue } from "./pipeline.js";
 import { generateNext, submitNext, syncSubmitted } from "./runner.js";
+import { validateJobInput } from "./validation.js";
 import type { ContentJobStore } from "./store.js";
 import type { PostizClient } from "./postiz-client.js";
 
@@ -84,16 +89,28 @@ export async function runWorkbenchTick(
       throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
     if (sources.length)
       store.bindBrandIntegration(brand.id, config.postiz.integrationId);
-    const collection = await collectSources({
-      store,
-      brandId: brand.id,
-      workerId: randomUUID(),
-      sources: sources as SourceConfig[],
-      sourceOptions: { ...config.source, baseDir: dirname(config.sourcesFile) },
-      maxSourcesPerTick: config.maxSourcesPerTick,
-      checkIntervalMs: config.discoveryIntervalMs,
-      leaseMs: config.leaseMs,
-    });
+    const sourceOptions = {
+      ...config.source,
+      baseDir: dirname(config.sourcesFile),
+    };
+    const collection = config.competitorMode
+      ? await collectCompetitorSources({
+          store,
+          brandId: brand.id,
+          workerId: randomUUID(),
+          sources: sources as SourceConfig[],
+          sourceOptions,
+        })
+      : await collectSources({
+          store,
+          brandId: brand.id,
+          workerId: randomUUID(),
+          sources: sources as SourceConfig[],
+          sourceOptions,
+          maxSourcesPerTick: config.maxSourcesPerTick,
+          checkIntervalMs: config.discoveryIntervalMs,
+          leaseMs: config.leaseMs,
+        });
     if (collection.failed)
       throw new Error(`${collection.failed} source checks failed`);
   });
@@ -104,26 +121,69 @@ export async function runWorkbenchTick(
         .length
     )
       options.model();
-    await selectAndQueue({
-      store,
-      brand,
-      integrationId: config.postiz.integrationId,
-      batchSize: config.selectionBatchSize,
-      sourceOptions: config.source,
-      model: { invoke: (request) => options.model().invoke(request) },
-    });
+    if (config.competitorMode)
+      await selectSocialAndQueue({
+        store,
+        brand,
+        integrationId: config.postiz.integrationId,
+        sourceOptions: config.source,
+        model: { invoke: (request) => options.model().invoke(request) },
+      });
+    else
+      await selectAndQueue({
+        store,
+        brand,
+        integrationId: config.postiz.integrationId,
+        batchSize: config.selectionBatchSize,
+        sourceOptions: config.source,
+        model: { invoke: (request) => options.model().invoke(request) },
+      });
   });
   await stage("writing", async () => {
-    if (store.list({ brandId: brand.id, state: "queued", limit: 1 }).length)
-      options.model();
-    for (
-      let i = 0;
-      i < config.maxJobsPerTick && !options.signal?.aborted;
-      i++
-    ) {
+    const queuedJobs = store.list({
+      brandId: brand.id,
+      state: "queued",
+      limit: 10000,
+    });
+    const targeted =
+      config.competitorMode ||
+      queuedJobs.some(
+        (job) =>
+          (job.input as { purpose?: unknown } | null)?.purpose ===
+          "brand_original",
+      );
+    const queued = targeted
+      ? queuedJobs
+      : Array.from({ length: config.maxJobsPerTick }, () => null);
+    let written = 0;
+    for (const candidate of queued) {
+      if (written >= config.maxJobsPerTick || options.signal?.aborted) break;
+      if (candidate) {
+        if (!candidate.writingApproved) continue;
+        const input = validateJobInput(candidate.input);
+        if (input.purpose === "brand_original") {
+          const readiness = store.brandWritingReadiness(brand, input.sources, {
+            purpose: "brand_original",
+            writingAngle: input.writingAngle,
+            inspirationRequiresFacts: input.inspirationRequiresFacts ?? false,
+          });
+          if (!readiness.ready) {
+            emit(
+              "writing.job",
+              "error",
+              `待补充品牌资料：${readiness.missing.join("；")}`,
+              candidate.id,
+            );
+            continue;
+          }
+        }
+      }
+      if (store.list({ brandId: brand.id, state: "queued", limit: 1 }).length)
+        options.model();
       const result = await generateNext({
         store,
         brandId: brand.id,
+        ...(candidate ? { jobId: candidate.id } : {}),
         leaseMs: config.leaseMs,
         allowScheduling: options.allowScheduling ?? config.allowScheduling,
         quota: {
@@ -132,9 +192,15 @@ export async function runWorkbenchTick(
         },
         generate: async (input, job) => {
           const documents = await loadDocuments(input.sources);
+          const factMatchSources = input.writingAngle
+            ? documents.map((document) => ({
+                ...document,
+                text: `${document.text}\n拟写角度：${input.writingAngle}`,
+              }))
+            : documents;
           const evidenceBrand = store.brandWithKnowledge(
             input.brand,
-            documents,
+            factMatchSources,
           );
           store.snapshotGenerationInput(job.id, job.leaseToken!, {
             ...input,
@@ -146,6 +212,9 @@ export async function runWorkbenchTick(
               brand: evidenceBrand,
               sources: documents,
               revision: input.revision,
+              purpose: input.purpose,
+              writingAngle: input.writingAngle,
+              inspirationRequiresFacts: input.inspirationRequiresFacts,
             },
             {
               model: {
@@ -173,6 +242,7 @@ export async function runWorkbenchTick(
         },
       });
       if (!result) break;
+      written++;
       emit(
         "writing.job",
         result.state === "failed" ? "error" : "finish",

@@ -40,7 +40,12 @@ export interface ContentInput {
   brand: BrandConfig;
   sources: SourceDocument[];
   revision?: Revision;
+  purpose?: ContentPurpose;
+  writingAngle?: string;
+  inspirationRequiresFacts?: boolean;
 }
+
+export type ContentPurpose = "brand_original" | "source_commentary";
 
 export type Revision =
   { kind: "edit"; post: string } | { kind: "rewrite"; instructions: string };
@@ -51,6 +56,9 @@ export interface ValidatedJobInput {
   integrationId: string;
   mediaPaths: string[];
   revision?: Revision;
+  purpose?: ContentPurpose;
+  writingAngle?: string;
+  inspirationRequiresFacts?: boolean;
   /** Internal marker: sources contain the exact documents used by generation. */
   sourceEvidenceSnapshot?: true;
 }
@@ -165,10 +173,17 @@ export const revisionSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const purposeFields = {
+  purpose: z.enum(["brand_original", "source_commentary"]).optional(),
+  writingAngle: nonempty(2_000).optional(),
+  inspirationRequiresFacts: z.boolean().optional(),
+};
+
 export const contentInputSchema = z.object({
   brand: brandSchema,
   sources: sourceDocumentsSchema,
   revision: revisionSchema.optional(),
+  ...purposeFields,
 });
 
 export const jobInputSchema = z.object({
@@ -185,6 +200,7 @@ export const jobInputSchema = z.object({
     .max(4)
     .default([]),
   revision: revisionSchema.optional(),
+  ...purposeFields,
   sourceEvidenceSnapshot: z.literal(true).optional(),
 });
 

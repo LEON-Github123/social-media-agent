@@ -338,6 +338,30 @@ const migrations: readonly Migration[] = [
       CREATE INDEX brand_facts_brand ON brand_facts (brand_id, status, expires_at, created_at, id);
     `,
   },
+  {
+    version: 10,
+    name: "competitor_social_materials",
+    sql: `
+      CREATE TABLE social_observations (
+        candidate_id TEXT NOT NULL, brand_id TEXT NOT NULL, observed_at INTEGER NOT NULL,
+        snapshot_json TEXT NOT NULL, PRIMARY KEY(candidate_id, observed_at)
+      );
+      CREATE INDEX social_observations_brand ON social_observations(brand_id, observed_at);
+      CREATE TABLE social_candidates (
+        candidate_id TEXT PRIMARY KEY, assessment_json TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT, error_message TEXT, evaluated_at INTEGER, next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        held INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE social_provider_calls (
+        id TEXT PRIMARY KEY, brand_id TEXT NOT NULL, day_key TEXT NOT NULL, kind TEXT NOT NULL,
+        target TEXT NOT NULL, tweet_ids_json TEXT NOT NULL, started_at INTEGER NOT NULL,
+        UNIQUE(brand_id, day_key, kind, target)
+      );
+      CREATE TABLE social_topic_intents (
+        topic_id TEXT PRIMARY KEY, intent_json TEXT NOT NULL, approval_snapshot_json TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export const CONTENT_SCHEMA_VERSION = migrations[migrations.length - 1].version;

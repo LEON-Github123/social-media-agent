@@ -11,6 +11,8 @@
     loading: false,
     snapshotHealthy: false,
     timer: null,
+    socialTab: "recommended",
+    renderedCompetitorMode: null,
   };
   const statusNames = {
     new: "待筛选",
@@ -325,6 +327,19 @@
     }
   }
 
+  function mutateSocial(path, payload, success) {
+    return mutate(path, payload, success, {
+      reset: () => {
+        document.activeElement?.blur();
+        $("topics-list")
+          .querySelectorAll("details[open]")
+          .forEach((details) => {
+            details.open = false;
+          });
+      },
+    });
+  }
+
   function render(s) {
     const report = s.report || {};
     const jobs = array(report.jobs?.items);
@@ -367,14 +382,23 @@
     $("material-readiness").textContent = missing.length
       ? `素材提交暂不可用：${missing.map((check) => missingCheckHelp[check.key] || checkNames[check.key] || check.label).join("、")}。请检查服务端配置。`
       : "";
+    const socialRecommended = array(s.socialCandidates).filter(
+      (item) => item.tier === "recommended",
+    ).length;
     $("attention-value").textContent = String(
-      awaiting + grouping + pendingJobs,
+      s.competitorMode
+        ? socialRecommended + pendingJobs
+        : awaiting + grouping + pendingJobs,
     );
-    $("attention-meta").textContent =
-      `${awaiting} 个待批准 · ${grouping} 个归组核对 · ${pendingJobs} 个历史待批任务`;
-    $("review-link").href = awaiting + grouping ? "#topics" : "#jobs";
+    $("attention-meta").textContent = s.competitorMode
+      ? `${socialRecommended} 条竞品推荐 · ${pendingJobs} 个历史待批任务`
+      : `${awaiting} 个待批准 · ${grouping} 个归组核对 · ${pendingJobs} 个历史待批任务`;
+    $("review-link").href =
+      s.competitorMode || awaiting + grouping ? "#topics" : "#jobs";
     $("review-link").textContent =
-      awaiting + grouping ? "去审核素材 →" : "查看内容任务 →";
+      s.competitorMode || awaiting + grouping
+        ? "去审核素材 →"
+        : "查看内容任务 →";
     $("brand-name").textContent = s.brand?.name || "品牌未配置";
     $("runtime-error").textContent = s.runtime?.lastError || "";
     $("runtime-error").hidden = !s.runtime?.lastError;
@@ -389,9 +413,26 @@
     if (postiz) $("sidebar-postiz").href = postiz;
     renderChecks(checks);
     renderEvents(array(s.events));
-    if (!activeFormIn("candidates-list"))
+    $("candidates").hidden = !!s.competitorMode;
+    document.querySelector('.side-nav a[href="#candidates"]').hidden =
+      !!s.competitorMode;
+    $("social-review-controls").hidden = !s.competitorMode;
+    $("topics-title").textContent = s.competitorMode
+      ? "竞品素材审批"
+      : "素材审批";
+    $("topics-description").textContent = s.competitorMode
+      ? "按今日推荐、待观察、处理异常与历史记录查看来源和评估；批准后生成品牌原创内容。"
+      : "按同一事件归组查看来源和模型判断；批准写作会使用今日额度并送至 Postiz 草稿。";
+    if (!s.competitorMode && !activeFormIn("candidates-list"))
       renderCandidates(array(s.candidates), report);
-    if (!activeFormIn("topics-list")) renderTopics(topics);
+    if (
+      state.renderedCompetitorMode !== !!s.competitorMode ||
+      !activeFormIn("topics-list")
+    ) {
+      if (s.competitorMode) renderSocialTopics(s);
+      else renderTopics(topics);
+    }
+    state.renderedCompetitorMode = !!s.competitorMode;
     renderJobs(jobs);
     if (!activeFormIn("brand-fact-list")) renderBrandFacts(array(s.brandFacts));
     renderSources(array(s.sources));
@@ -540,6 +581,444 @@
             ),
         );
         row.append(form);
+      }
+      target.append(row);
+    });
+  }
+  function renderSocialTopics(snapshot) {
+    const target = $("topics-list");
+    const candidates = new Map(
+      array(snapshot.candidates).map((candidate) => [candidate.id, candidate]),
+    );
+    const social = new Map(
+      array(snapshot.socialCandidates).map((item) => [item.candidateId, item]),
+    );
+    const linked = new Set();
+    const entries = array(snapshot.topics).map((topic) => {
+      const states = array(topic.sourceCandidateIds)
+        .map((id) => social.get(id))
+        .filter(Boolean);
+      states.forEach((item) => linked.add(item.candidateId));
+      const selected =
+        states.find((item) => item.tier === "recommended") ||
+        states.find((item) => item.tier === "error") ||
+        states.find((item) => item.tier === "watch") ||
+        states[0] ||
+        null;
+      return { topic, selected };
+    });
+    for (const item of social.values()) {
+      if (!linked.has(item.candidateId))
+        entries.push({ topic: null, selected: item });
+    }
+    const tabFor = ({ topic, selected }) => {
+      if (
+        topic &&
+        (topic.hasContent ||
+          topic.mergedIntoTopicId ||
+          ["ready", "rejected", "existing"].includes(topic.status))
+      )
+        return "history";
+      if (topic?.status === "needs_review")
+        return selected?.tier === "error" || !selected ? "errors" : "watch";
+      if (selected?.tier === "recommended") return "recommended";
+      if (selected?.tier === "error") return "errors";
+      if (selected?.tier === "watch" || selected?.tier === "pending")
+        return "watch";
+      return "history";
+    };
+    const counts = { recommended: 0, watch: 0, errors: 0, history: 0 };
+    entries.forEach((entry) => {
+      counts[tabFor(entry)] += 1;
+    });
+    const tabNames = {
+      recommended: "今日推荐",
+      watch: "待观察",
+      errors: "处理异常",
+      history: "历史记录",
+    };
+    $("social-review-tabs")
+      .querySelectorAll("[data-social-tab]")
+      .forEach((button) => {
+        const tab = button.dataset.socialTab;
+        button.textContent = `${tabNames[tab]} ${counts[tab]}`;
+        button.setAttribute(
+          "aria-selected",
+          tab === state.socialTab ? "true" : "false",
+        );
+        button.classList.toggle("selected", tab === state.socialTab);
+      });
+    const quota = snapshot.socialQuotas;
+    $("social-quota").textContent = quota
+      ? `今日 X 数据请求 ${quota.provider?.used ?? "—"}/${quota.provider?.limit ?? 10} · AI 评估 ${quota.selection?.used ?? "—"}/${quota.selection?.limit ?? 40}`
+      : "竞品处理额度暂不可用";
+    const visible = entries
+      .filter((entry) => tabFor(entry) === state.socialTab)
+      .sort(
+        (a, b) =>
+          (b.selected?.score ?? -1) - (a.selected?.score ?? -1) ||
+          (b.topic?.createdAt ?? 0) - (a.topic?.createdAt ?? 0),
+      );
+    $("topic-count").textContent = `${visible.length} 条`;
+    clear(target);
+    if (!visible.length) {
+      target.append(
+        empty(
+          `暂无${tabNames[state.socialTab]}素材`,
+          "下次流程运行后会自动更新。",
+        ),
+      );
+      return;
+    }
+    visible.forEach(({ topic, selected }) => {
+      const assessment = selected?.assessment;
+      const original = selected ? candidates.get(selected.candidateId) : null;
+      const title = assessment?.title || topic?.title || "候选素材待评估";
+      const row = node("article", "list-item social-item");
+      const stateLabel =
+        selected?.tier === "recommended"
+          ? "推荐"
+          : selected?.tier === "watch"
+            ? "待观察"
+            : selected?.tier === "error"
+              ? "评估异常"
+              : "历史";
+      add(
+        row,
+        add(
+          node("div", "item-top"),
+          node("h3", "", title),
+          node(
+            "span",
+            `pill ${selected?.tier === "recommended" ? "good" : selected?.tier === "error" ? "danger" : "warn"}`,
+            stateLabel,
+          ),
+        ),
+        node(
+          "p",
+          "item-meta",
+          `${selected?.social?.authorHandle ? `@${selected.social.authorHandle}` : "作者未提供"} · ${topic ? `选题 ${shortId(topic.id)}` : "尚未形成选题"}`,
+        ),
+      );
+      if (assessment?.summary)
+        row.append(node("p", "social-summary", assessment.summary));
+      if (assessment?.reason)
+        row.append(node("p", "reason", `推荐依据：${assessment.reason}`));
+      if (assessment?.angle)
+        row.append(node("p", "reason", `可写角度：${assessment.angle}`));
+      if (array(assessment?.factGaps).length)
+        row.append(
+          node(
+            "p",
+            "inline-warning",
+            `待核实：${assessment.factGaps.join("、")}`,
+          ),
+        );
+      if (selected?.social) {
+        const metric = (value) =>
+          Number.isSafeInteger(value) && value >= 0
+            ? value.toLocaleString("zh-CN")
+            : "未提供";
+        const socialData = selected.social;
+        const rate = selected.performance?.interactionRate;
+        const metrics = node("div", "social-metrics");
+        [
+          ["浏览", socialData.views],
+          ["喜欢", socialData.likes],
+          ["回复", socialData.replies],
+          ["转发", socialData.reposts],
+          ["引用", socialData.quotes],
+          ["收藏", socialData.bookmarks],
+        ].forEach(([name, value]) => {
+          metrics.append(
+            add(
+              node("div"),
+              node("small", "", name),
+              node("strong", "", metric(value)),
+            ),
+          );
+        });
+        row.append(metrics);
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            `互动率：${typeof rate === "number" && Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : "未提供"} · 观测于 ${time(socialData.observedAt)}`,
+          ),
+        );
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            "传播高不等于产品声明已核实；涉及产品事实仍须核对来源。",
+          ),
+        );
+        const performance = selected.performance;
+        if (assessment)
+          row.append(
+            node(
+              "p",
+              "reason",
+              `综合分 ${selected.score ?? "—"} · 传播 ${performance?.score ?? "未提供"}（40%）· 相关性 ${assessment.relevance ?? "—"}（35%）· 借鉴价值 ${assessment.reusability ?? "—"}（25%）`,
+            ),
+          );
+        const ranks = [
+          ["浏览", performance?.viewsScore],
+          ["互动量", performance?.interactionsScore],
+          ["互动率", performance?.rateScore],
+        ].filter(([, value]) => typeof value === "number");
+        if (ranks.length)
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              `同年龄档比较：${ranks.map(([name, value]) => `${name}超过约 ${value}% 的对照帖`).join("；")}。`,
+            ),
+          );
+        if (
+          performance?.accountScore !== null &&
+          typeof performance?.accountScore === "number"
+        )
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              `互动量超过约 ${performance.accountScore}% 的同账号对照帖（${performance.accountSampleCount} 个样本）。`,
+            ),
+          );
+        else
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "同账号基线样本不足，暂不判断传播是否超常。",
+            ),
+          );
+        if (performance?.sufficient !== true)
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "同年龄档传播指标或对照样本不足，先观察后判断。",
+            ),
+          );
+      }
+      const url =
+        original?.document?.url ||
+        original?.input?.url ||
+        array(topic?.sourceUrls)[0];
+      if (url) row.append(link(url, "查看原文 ↗"));
+      const sourceText = original?.document?.text || original?.input?.text;
+      if (sourceText) {
+        const details = node("details", "social-original");
+        details.append(
+          node("summary", "", "展开原文"),
+          node("p", "pre-wrap", sourceText),
+        );
+        row.append(details);
+      }
+      if (topic?.brandReadiness?.ready === false)
+        row.append(
+          node(
+            "p",
+            "inline-warning",
+            `待补品牌资料：${array(topic.brandReadiness.missing).join("、") || "请补齐品牌事实"}。补齐前不能批准写作。`,
+          ),
+        );
+      const genericModelError =
+        "历史评估失败，原始原因未记录；补齐指标后有界重评";
+      const displayModelError = (value) =>
+        /^(?:modelError|model error|Selection model failed or returned an invalid decision set; no candidates were auto-selected)$/i.test(
+          value.trim(),
+        )
+          ? genericModelError
+          : value;
+      const plainError =
+        selected?.errorMessage ||
+        (selected?.tier === "error" ? genericModelError : "");
+      if (plainError)
+        row.append(node("p", "inline-warning", displayModelError(plainError)));
+      if (!assessment?.reason && topic?.reason)
+        row.append(node("p", "reason", displayModelError(topic.reason)));
+      if (
+        selected &&
+        ["awaiting_approval", "needs_review"].includes(topic?.status) &&
+        !topic.hasContent &&
+        !topic.mergedIntoTopicId
+      ) {
+        const actions = node("div", "topic-actions");
+        const endpoint = `/api/topics/${encodeURIComponent(topic.id)}/review`;
+        const conflicts = array(topic.conflictingTopicIds);
+        const mergeOptions = conflicts
+          .filter(
+            (id) =>
+              id &&
+              id !== topic.id &&
+              array(snapshot.topics).some(
+                (candidate) => candidate.id === id && candidate.jobId,
+              ),
+          )
+          .map((id) => ({
+            value: id,
+            label:
+              array(snapshot.topics).find((candidate) => candidate.id === id)
+                ?.title || id,
+          }));
+        if (conflicts.length && !mergeOptions.length)
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "该选题与既有内容冲突，尚无可合并的任务；请先核对归组。",
+            ),
+          );
+        if (selected.tier === "watch")
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              "待观察素材可由你人工选择；批准仍需核实来源和品牌事实。",
+            ),
+          );
+        if (
+          ["recommended", "watch"].includes(selected.tier) &&
+          topic.brandReadiness?.ready === true &&
+          (!conflicts.length || mergeOptions.length)
+        )
+          actions.append(
+            actionForm(
+              selected.tier === "watch" ? "人工选择并批准写作" : "批准写作",
+              [
+                field(
+                  "writingAngle",
+                  "写作角度（可选）",
+                  false,
+                  assessment?.angle || "",
+                ),
+                ...(mergeOptions.length
+                  ? [
+                      selectField("mergeWith", "合并到已有内容", [
+                        { value: "", label: "请选择合并目标" },
+                        ...mergeOptions,
+                      ]),
+                    ]
+                  : []),
+              ],
+              async (values) => {
+                if (conflicts.length && !values.mergeWith) {
+                  note("该选题与已有内容冲突，请选择合并目标。", "error");
+                  return;
+                }
+                mutateSocial(
+                  endpoint,
+                  {
+                    decision: "approve",
+                    reason: "人工批准竞品选题写作",
+                    purpose: "brand_original",
+                    ...(values.writingAngle
+                      ? { writingAngle: values.writingAngle }
+                      : {}),
+                    ...(values.mergeWith
+                      ? { mergeWith: values.mergeWith }
+                      : {}),
+                  },
+                  "已批准写作，任务将进入 Postiz 草稿流程。",
+                );
+              },
+            ),
+          );
+        else if (
+          ["recommended", "watch"].includes(selected.tier) &&
+          topic.brandReadiness?.ready !== true
+        )
+          row.append(
+            node(
+              "p",
+              "inline-warning",
+              "品牌资料状态尚未核验，暂不能批准写作。",
+            ),
+          );
+        actions.append(
+          actionForm(
+            "跳过此选题",
+            [field("reason", "跳过原因", true)],
+            async (values) =>
+              mutateSocial(
+                endpoint,
+                { decision: "reject", reason: values.reason },
+                "已跳过此选题。",
+              ),
+          ),
+        );
+        row.append(actions);
+      }
+      if (selected && state.socialTab !== "history") {
+        const actions = node("div", "topic-actions");
+        if (!selected.held)
+          actions.append(
+            actionForm(
+              "暂存观察",
+              [field("reason", "暂存原因", true)],
+              async (values) =>
+                mutateSocial(
+                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/hold`,
+                  { held: true, reason: values.reason },
+                  "已暂存观察。",
+                ),
+            ),
+          );
+        else actions.append(node("span", "pill warn", "已暂存"));
+        if (selected.tier === "error" && selected.attempts < 2)
+          actions.append(
+            actionForm(
+              "重试评估",
+              [field("reason", "重试原因", true)],
+              async (values) =>
+                mutateSocial(
+                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/retry`,
+                  { reason: values.reason },
+                  "已提交重试。",
+                ),
+            ),
+          );
+        else if (selected.tier === "error")
+          actions.append(
+            node(
+              "p",
+              "inline-warning",
+              "已到自动重试上限，请人工核查来源或配置。",
+            ),
+          );
+        row.append(actions);
+      }
+      if (!selected && topic) {
+        row.append(node("p", "item-meta", "非竞品来源 · 历史资料"));
+        array(topic.sourceUrls).forEach((sourceUrl) =>
+          row.append(link(sourceUrl, sourceUrl)),
+        );
+        const sourceIds = array(topic.sourceCandidateIds);
+        const manualOnly =
+          sourceIds.length > 0 &&
+          sourceIds.every((id) => candidates.get(id)?.origin === "manual");
+        if (
+          manualOnly &&
+          topic.status === "awaiting_approval" &&
+          !topic.hasContent &&
+          topic.brandReadiness?.ready !== false
+        )
+          row.append(
+            actionForm("批准手动选题写作", [], async () =>
+              mutateSocial(
+                `/api/topics/${encodeURIComponent(topic.id)}/review`,
+                {
+                  decision: "approve",
+                  reason: "人工批准手动选题写作",
+                  purpose: "brand_original",
+                },
+                "已批准写作。",
+              ),
+            ),
+          );
       }
       target.append(row);
     });
@@ -1654,6 +2133,13 @@
     showLogin();
   });
   $("refresh").addEventListener("click", () => refresh({ detail: true }));
+  $("social-review-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-social-tab]")?.dataset.socialTab;
+    if (!tab || !state.snapshot?.competitorMode) return;
+    state.socialTab = tab;
+    renderSocialTopics(state.snapshot);
+    setBusy(state.busy);
+  });
   $("run").addEventListener("click", () =>
     mutate("/api/run", {}, "流程已启动，进度会自动更新。"),
   );

@@ -31,6 +31,7 @@ import {
 import { JobConflictError } from "./store-errors.js";
 import { readLocalText } from "./files.js";
 import { sourceIdentity } from "./sources.js";
+import { competitorSources } from "./social-pipeline.js";
 import { ZodError } from "zod";
 
 type Json = Record<string, unknown>;
@@ -155,7 +156,10 @@ export class Workbench {
     if (!Array.isArray(configuredSources))
       throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
     const activeSourceIds = new Set(
-      configuredSources
+      (this.config.competitorMode
+        ? competitorSources(configuredSources)
+        : configuredSources
+      )
         .filter((source) => source?.enabled !== false)
         .map((source) =>
           sourceIdentity(source, {
@@ -208,13 +212,37 @@ export class Workbench {
     return {
       brand: brand ? { id: brand.id, name: brand.name } : null,
       brandFacts: brand ? this.store.listBrandFacts(brand.id) : [],
+      competitorMode: Boolean(this.config.competitorMode),
+      socialCandidates:
+        brand && this.config.competitorMode
+          ? this.store.listSocialStates(brand.id, [...activeSourceIds])
+          : [],
+      socialQuotas:
+        brand && this.config.competitorMode
+          ? this.store.socialQuotas(brand.id)
+          : null,
       readiness: this.readiness(),
       policy: { topicApprovalRequired: true },
       runtime: { ...this.runtime },
       quota,
       report,
       candidates,
-      topics: brand ? this.store.listTopics({ brandId: brand.id }) : [],
+      topics: brand
+        ? this.store.listTopics({ brandId: brand.id }).map((topic) => ({
+            ...topic,
+            ...(this.config.competitorMode &&
+            topic.sourceCandidateIds.some((id) =>
+              this.store.latestSocialSnapshot(id),
+            )
+              ? {
+                  brandReadiness: this.store.socialTopicReadiness(
+                    brand,
+                    topic.id,
+                  ),
+                }
+              : {}),
+          }))
+        : [],
       sources: brand
         ? this.store
             .listSourceCheckpoints({ brandId: brand.id })
@@ -439,6 +467,32 @@ export class Workbench {
         !["approve", "reject"].includes(String(body.decision))
       )
         throw new HttpError(400, "Decision and reason are required");
+      const topicId = decodeURIComponent(topic[1]);
+      if (
+        this.config.competitorMode &&
+        this.store
+          .getTopic(topicId)
+          ?.sourceCandidateIds.some((id) => this.store.latestSocialSnapshot(id))
+      ) {
+        if (body.purpose !== undefined && body.purpose !== "brand_original")
+          throw new HttpError(400, "竞对素材用于 Tokenhot 原创帖");
+        if (
+          body.writingAngle !== undefined &&
+          typeof body.writingAngle !== "string"
+        )
+          throw new HttpError(400, "写作角度必须是文本");
+        return this.store.reviewSocialTopic(topicId, {
+          brand,
+          decision: body.decision as "approve" | "reject",
+          reason: body.reason as string,
+          ...(typeof body.writingAngle === "string" && body.writingAngle.trim()
+            ? { writingAngle: body.writingAngle }
+            : {}),
+          ...(typeof body.mergeWith === "string"
+            ? { mergeWith: body.mergeWith }
+            : {}),
+        });
+      }
       return this.store.reviewTopic(decodeURIComponent(topic[1]), {
         brandId: brand.id,
         decision: body.decision as "approve" | "reject",
@@ -465,6 +519,25 @@ export class Workbench {
         ...(body.convertToDraft === true ? { convertToDraft: true } : {}),
       });
     }
+    const socialCandidate =
+      /^\/api\/social-candidates\/([^/]+)\/(hold|retry)$/.exec(path);
+    if (socialCandidate) {
+      const brand = this.requireReady();
+      if (!validReason(body.reason)) throw new HttpError(400, "请填写处理原因");
+      const id = decodeURIComponent(socialCandidate[1]);
+      if (socialCandidate[2] === "hold") {
+        if (typeof body.held !== "boolean")
+          throw new HttpError(400, "held 必须为布尔值");
+        this.store.holdSocialCandidate(
+          brand.id,
+          id,
+          body.held,
+          body.reason as string,
+        );
+      } else
+        this.store.retrySocialCandidate(brand.id, id, body.reason as string);
+      return { accepted: true };
+    }
     const candidate = /^\/api\/candidates\/([^/]+)\/retry$/.exec(path);
     if (candidate) {
       const brand = this.requireReady();
@@ -478,6 +551,10 @@ export class Workbench {
       const current = this.store.getCandidate(id);
       if (!current || current.brandId !== brand.id)
         throw new HttpError(404, "Candidate was not found");
+      if (this.config.competitorMode && current.origin === "twitterapi-user") {
+        this.store.retrySocialCandidate(brand.id, id, body.reason as string);
+        return { accepted: true };
+      }
       return body.confirmNewEvent
         ? this.store.resolveCandidateLegacy(id, {
             brandId: brand.id,

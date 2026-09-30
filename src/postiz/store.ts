@@ -12,6 +12,7 @@ import {
 } from "./validation.js";
 import type { GenerationQuotaOptions } from "./operations-store.js";
 import { BrandKnowledgeStore } from "./brand-knowledge.js";
+import type { WritingIntent } from "./social-store.js";
 import { JobConflictError, LeaseLostError } from "./store-errors.js";
 export { JobConflictError, LeaseLostError } from "./store-errors.js";
 export type {
@@ -716,6 +717,193 @@ export class ContentJobStore extends BrandKnowledgeStore {
     };
   }
 
+  brandWritingReadiness(
+    brand: BrandConfig,
+    sources: SourceInput[],
+    intent: WritingIntent | null,
+  ) {
+    if (!intent) return { ready: true, missing: [] as string[] };
+    const angle = intent.writingAngle ?? "";
+    const claimsBrand =
+      /Tokenhot|我们|我的|本产品|本服务|本平台|自有|our\b/i.test(angle);
+    const requiresFacts = intent.inspirationRequiresFacts || claimsBrand;
+    if (!requiresFacts) return { ready: true, missing: [] as string[] };
+    const context = angle.trim()
+      ? sources.map((source) => ({
+          ...source,
+          title: "",
+          text: angle,
+        }))
+      : sources;
+    const matching = this.matchBrandFacts(brand.id, context);
+    // Broad source text or an unrelated configured fact cannot substantiate a
+    // specific operator angle. Chinese facts can use reviewed matching keywords.
+    const stopWords = new Set([
+      brand.id.toLowerCase(),
+      brand.name.toLowerCase(),
+      "tokenhot",
+      "api",
+      "apis",
+      "the",
+      "and",
+      "our",
+      "with",
+      "that",
+      "this",
+      "from",
+      "https",
+      "www",
+      "com",
+      "website",
+      "platform",
+      "model",
+      "models",
+      "provide",
+      "provides",
+      "support",
+      "supports",
+      "developer",
+      "developers",
+    ]);
+    const terms = (text: string) =>
+      new Set(
+        (
+          text
+            .toLowerCase()
+            .match(
+              /[a-z][a-z0-9_.-]{2,}|视频生成|图像生成|语音合成|文生图|图生视频|兼容|定价|价格|延迟|吞吐量/g,
+            ) ?? []
+        ).filter((word) => !stopWords.has(word)),
+      );
+    const requested = terms(
+      context
+        .map((source) => `${source.title ?? ""} ${source.text ?? ""}`)
+        .join(" "),
+    );
+    const staticFacts = (brand.verifiedFacts ?? []).filter(
+      (fact) =>
+        !fact.knowledgeId &&
+        [...terms(`${fact.claim} ${fact.evidence ?? ""}`)].some((term) =>
+          requested.has(term),
+        ),
+    );
+    const evidence = [...matching, ...staticFacts];
+    const missing: string[] = [];
+    if (!evidence.length)
+      missing.push("与该选题及写作角度匹配的已确认 Tokenhot 资料");
+    if (
+      /价格|定价|便宜|节省|price|pricing|cheaper|cost|\$/i.test(angle) &&
+      !matching.some((fact) => fact.category === "pricing") &&
+      !evidence.some((fact) =>
+        /价格|定价|price|pricing|cost|\$/i.test(fact.claim),
+      )
+    )
+      missing.push("有效的 Tokenhot 价格依据");
+    if (
+      /性能|速度|延迟|吞吐|performance|latency|faster|throughput/i.test(
+        angle,
+      ) &&
+      !evidence.some((fact) =>
+        /性能|速度|延迟|吞吐|performance|latency|faster|throughput/i.test(
+          fact.claim,
+        ),
+      )
+    )
+      missing.push("可核实的 Tokenhot 性能或测试依据");
+    return { ready: missing.length === 0, missing };
+  }
+
+  socialTopicReadiness(
+    brand: BrandConfig,
+    topicId: string,
+    writingAngle?: string,
+  ) {
+    const topic = this.getTopic(topicId);
+    if (!topic || topic.brandId !== brand.id)
+      throw new JobConflictError("选题不存在");
+    const states = this.listSocialStates(brand.id).filter((state) =>
+      topic.sourceCandidateIds.includes(state.candidateId),
+    );
+    const intent: WritingIntent = {
+      purpose: "brand_original",
+      writingAngle:
+        writingAngle?.trim() ||
+        states.find((state) => state.assessment)?.assessment?.angle,
+      inspirationRequiresFacts: states.some(
+        (state) => state.assessment?.requiresBrandFacts,
+      ),
+    };
+    const sources =
+      topic.approvedSources ??
+      topic.sourceCandidateIds
+        .map((id) => this.getCandidate(id)?.document)
+        .filter((source): source is NonNullable<typeof source> =>
+          Boolean(source),
+        );
+    return {
+      intent,
+      states,
+      sources,
+      ...this.brandWritingReadiness(brand, sources, intent),
+    };
+  }
+
+  reviewSocialTopic(
+    id: string,
+    options: {
+      brand: BrandConfig;
+      decision: "approve" | "reject";
+      reason: string;
+      writingAngle?: string;
+      mergeWith?: string;
+    },
+  ) {
+    if (
+      options.writingAngle !== undefined &&
+      (!options.writingAngle.trim() || options.writingAngle.length > 2000)
+    )
+      throw new TypeError("写作角度须为 1–2000 字符");
+    return this.transaction(() => {
+      // Merging adds references to an already bound event; its writing intent is immutable.
+      if (options.mergeWith)
+        return this.reviewTopic(id, { ...options, brandId: options.brand.id });
+      const readiness = this.socialTopicReadiness(
+        options.brand,
+        id,
+        options.writingAngle,
+      );
+      if (options.decision === "approve" && !readiness.ready)
+        throw new JobConflictError(
+          `待补充品牌资料：${readiness.missing.join("；")}`,
+        );
+      if (!readiness.states.length)
+        throw new JobConflictError("选题没有可信竞对素材");
+      const topic = this.reviewTopic(id, {
+        ...options,
+        brandId: options.brand.id,
+      });
+      if (options.decision === "approve") {
+        this.saveTopicIntent(topic.id, readiness.intent, {
+          sources: topic.approvedSources,
+          social: readiness.states,
+          brand: this.brandWithKnowledge(options.brand, readiness.sources),
+          approvedAt: this.now(),
+        });
+        this.recordAudit({
+          brandId: options.brand.id,
+          eventType: "social.approved",
+          reason: options.reason,
+          after: {
+            topicId: topic.id,
+            intent: readiness.intent,
+            social: readiness.states,
+          },
+        });
+      }
+      return topic;
+    });
+  }
+
   assertKnowledgeCurrent(brand: BrandConfig): void {
     const dynamicFacts = (brand.verifiedFacts ?? []).filter(
       (fact) => fact.knowledgeId,
@@ -768,6 +956,9 @@ export class ContentJobStore extends BrandKnowledgeStore {
           (source, index) => source.url !== next.sources[index].url,
         ) ||
         oldInput.integrationId !== next.integrationId ||
+        oldInput.purpose !== next.purpose ||
+        oldInput.writingAngle !== next.writingAngle ||
+        oldInput.inspirationRequiresFacts !== next.inspirationRequiresFacts ||
         JSON.stringify(oldInput.mediaPaths) !==
           JSON.stringify(next.mediaPaths) ||
         JSON.stringify(oldInput.revision) !== JSON.stringify(next.revision)

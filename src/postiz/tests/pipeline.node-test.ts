@@ -69,6 +69,43 @@ function selectorModel(): ContentModel {
   };
 }
 
+void test("manual-only selection ignores queued RSS candidates and uses one external reservation ledger", async (t) => {
+  const store = new ContentJobStore(":memory:", { now: () => now });
+  t.after(() => store.close());
+  store.upsertCandidates({
+    brandId: brand.id,
+    origin: "rss",
+    inputs: [material("1.10")],
+  });
+  store.upsertCandidates({
+    brandId: brand.id,
+    origin: "manual",
+    inputs: [material("1.11")],
+  });
+  const reservations: string[][] = [];
+  const result = await selectAndQueue({
+    store,
+    brand,
+    integrationId: "x-tokenhot",
+    model: selectorModel(),
+    now,
+    batchSize: 5,
+    candidateOrigins: ["manual"],
+    reserveSelectionCall: (_request, ids) => {
+      reservations.push(ids);
+    },
+  });
+  assert.equal(result.evaluated, 1);
+  assert.ok(reservations.length >= 1);
+  assert.ok(reservations.every((ids) => ids.length === 1));
+  assert.equal(store.listSelectionModelCalls({ brandId: brand.id }).length, 0);
+  assert.equal(
+    store.listCandidates({ brandId: brand.id, origin: "rss", status: "new" })
+      .length,
+    1,
+  );
+});
+
 void test("same announcement across batches stays one job after an unknown submission; another version is independent", async (t) => {
   const store = new ContentJobStore(":memory:", { now: () => now });
   t.after(() => store.close());

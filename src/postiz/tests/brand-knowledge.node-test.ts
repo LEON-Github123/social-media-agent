@@ -54,10 +54,10 @@ function input(overrides: Record<string, unknown> = {}) {
   };
 }
 
-void test("v9 migrates memory and disk databases without losing jobs, with a disk backup", (t) => {
+void test("v10 migrates memory and disk databases without losing jobs, with a disk backup", (t) => {
   const memory = open();
   assert.equal(memory.migration.version, CONTENT_SCHEMA_VERSION);
-  assert.equal(CONTENT_SCHEMA_VERSION, 9);
+  assert.equal(CONTENT_SCHEMA_VERSION, 10);
   memory.db.close();
 
   const dir = mkdtempSync(join(tmpdir(), "postiz-brand-knowledge-"));
@@ -72,8 +72,10 @@ void test("v9 migrates memory and disk databases without losing jobs, with a dis
     )
     .run();
   // Leave a real v8 migration history and task in place for the next open.
-  first.db.exec("DROP TABLE brand_facts");
-  first.db.prepare("DELETE FROM schema_migrations WHERE version=9").run();
+  first.db.exec(
+    "DROP TABLE social_topic_intents; DROP TABLE social_provider_calls; DROP TABLE social_candidates; DROP TABLE social_observations; DROP TABLE brand_facts",
+  );
+  first.db.prepare("DELETE FROM schema_migrations WHERE version>=9").run();
   first.db.close();
   const second = open(path);
   assert.equal(

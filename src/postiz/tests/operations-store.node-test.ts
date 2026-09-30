@@ -807,7 +807,9 @@ void test("version seven repairs already-reviewed candidates with a consistent b
       "UPDATE content_candidates SET status='needs_review',last_error='Old model concern' WHERE id IN (?,?)",
     )
     .run(approved.id, rejected.id);
-  old.exec("DROP TABLE brand_facts");
+  old.exec(
+    "DROP TABLE social_topic_intents; DROP TABLE social_provider_calls; DROP TABLE social_candidates; DROP TABLE social_observations; DROP TABLE brand_facts",
+  );
   old.prepare("DELETE FROM schema_migrations WHERE version>=7").run();
   old.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
   old.close();

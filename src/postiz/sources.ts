@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { load } from "cheerio";
+import type { XPostSnapshot } from "./social-types.js";
 import {
   boundedInteger,
   fetchPublicText,
@@ -80,6 +81,8 @@ export type SourceReadCheckpoint = {
       remainingItems: number;
       seenCursors: string[];
       seenIds: string[];
+      /** Aligned with pending; absent in checkpoints written before social observations. */
+      pendingSnapshots?: Array<XPostSnapshot | null>;
     }
 );
 
@@ -103,6 +106,8 @@ export interface SourceOptions extends PublicNetworkOptions {
   maxPages?: number;
   baseDir?: string;
   now?: () => Date;
+  onSocialSnapshot?: (source: SourceInput, snapshot: XPostSnapshot) => void;
+  beforeProviderRequest?: () => void | Promise<void>;
 }
 
 function nonempty(value: unknown, name: string): string {
@@ -460,13 +465,15 @@ type TwitterApiSourceConfig = Extract<
 >;
 type XSourceConfig = GetxSourceConfig | TwitterApiSourceConfig;
 
-function tweetInputs(
+type TweetItem = { input: SourceInput; snapshot: XPostSnapshot };
+
+function tweetItems(
   tweets: unknown[],
-  config: XSourceConfig,
+  config: XSourceConfig | null,
   maxChars: number,
   now: Date,
-): SourceInput[] {
-  const inputs: SourceInput[] = [];
+): TweetItem[] {
+  const items: TweetItem[] = [];
   const seenIds = new Set<string>();
   for (const value of tweets) {
     if (!value || typeof value !== "object") continue;
@@ -481,28 +488,62 @@ function tweetInputs(
       continue;
     seenIds.add(tweet.id);
     if (
-      config.minLikes !== undefined &&
+      config?.minLikes !== undefined &&
       (typeof tweet.likeCount !== "number" || tweet.likeCount < config.minLikes)
     )
       continue;
     const publishedAt = normalizedDate(tweet.createdAt);
-    if (!recentEnough(publishedAt, config.maxAgeHours, now)) continue;
-    const author =
-      tweet.author && typeof tweet.author === "object"
-        ? (tweet.author as Record<string, unknown>).userName
-        : undefined;
+    if (!recentEnough(publishedAt, config?.maxAgeHours, now)) continue;
+    const authorRecord = configRecord(tweet.author);
+    const author = authorRecord?.userName;
     const userName =
       typeof author === "string" && /^[A-Za-z0-9_]{1,15}$/.test(author)
         ? author
         : "i";
-    inputs.push({
+    const input: SourceInput = {
       url: `https://x.com/${userName}/status/${tweet.id}`,
       text: textContent(tweet.text).slice(0, maxChars),
       ...(userName !== "i" ? { title: `@${userName} on X` } : {}),
       ...(publishedAt ? { publishedAt } : {}),
-    });
+    };
+    const count = (value: unknown): number | null =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+        ? value
+        : null;
+    const id = (value: unknown): string | null =>
+      typeof value === "string" && /^\d{1,30}$/.test(value) ? value : null;
+    const quoted = configRecord(tweet.quoted_tweet);
+    const snapshot: XPostSnapshot = {
+      tweetId: tweet.id,
+      authorId: id(authorRecord?.id),
+      authorHandle:
+        typeof author === "string" && /^[A-Za-z0-9_]{1,15}$/.test(author)
+          ? author
+          : "",
+      authorName:
+        typeof authorRecord?.name === "string" && authorRecord.name.trim()
+          ? authorRecord.name.trim()
+          : null,
+      postType: tweet.retweeted_tweet
+        ? "repost"
+        : quoted
+          ? "quote"
+          : tweet.isReply === true || id(tweet.inReplyToId)
+            ? "reply"
+            : "original",
+      quotedTweetId: id(quoted?.id),
+      publishedAt: publishedAt ?? null,
+      observedAt: now.getTime(),
+      views: count(tweet.viewCount),
+      likes: count(tweet.likeCount),
+      replies: count(tweet.replyCount),
+      reposts: count(tweet.retweetCount),
+      quotes: count(tweet.quoteCount),
+      bookmarks: count(tweet.bookmarkCount),
+    };
+    items.push({ input, snapshot });
   }
-  return inputs;
+  return items;
 }
 
 function validateXFilters(config: XSourceConfig): void {
@@ -520,7 +561,7 @@ async function getxPage(
   maxChars: number,
   now: Date,
   cursor: string | null,
-): Promise<{ inputs: SourceInput[]; nextCursor: string | null }> {
+): Promise<{ items: TweetItem[]; nextCursor: string | null }> {
   const key = nonempty(
     options.getxApiKey ?? options.getxApiToken,
     "GetXAPI token",
@@ -572,14 +613,32 @@ async function getxPage(
   // a provider unexpectedly changes its contract, rather than silently losing it.
   if (payload.tweets.length > 100)
     throw new Error("GetXAPI page exceeds 100 tweets");
-  const inputs = tweetInputs(payload.tweets, config, maxChars, now);
+  const items = tweetItems(payload.tweets, config, maxChars, now);
   const nextCursor =
     payload.has_more && payload.tweets.length
       ? nonempty(payload.next_cursor, "GetXAPI next_cursor")
       : null;
   if (nextCursor && nextCursor.length > 8_192)
     throw new Error("GetXAPI cursor exceeds length limit");
-  return { inputs, nextCursor };
+  return { items, nextCursor };
+}
+
+async function twitterApiRequest(
+  url: URL,
+  options: SourceOptions,
+): Promise<Record<string, unknown>> {
+  const key = nonempty(options.twitterApiIoApiKey, "TwitterAPI.io API key");
+  await options.beforeProviderRequest?.();
+  const response = await fetchPublicText(url.href, {
+    ...options,
+    headers: { "X-API-Key": key, accept: "application/json" },
+    maxRedirects: 0,
+  });
+  if (response.status < 200 || response.status >= 300)
+    throw new Error(
+      `TwitterAPI.io request failed with HTTP ${response.status}`,
+    );
+  return jsonObject(response.text, "TwitterAPI.io");
 }
 
 async function twitterApiPage(
@@ -588,8 +647,7 @@ async function twitterApiPage(
   maxChars: number,
   now: Date,
   cursor: string | null,
-): Promise<{ inputs: SourceInput[]; nextCursor: string | null }> {
-  const key = nonempty(options.twitterApiIoApiKey, "TwitterAPI.io API key");
+): Promise<{ items: TweetItem[]; nextCursor: string | null }> {
   validateXFilters(config);
   const url = new URL(
     config.type === "twitterapi-search"
@@ -617,16 +675,7 @@ async function twitterApiPage(
     url.searchParams.set("includeReplies", "false");
   }
   if (cursor) url.searchParams.set("cursor", cursor);
-  const response = await fetchPublicText(url.href, {
-    ...options,
-    headers: { "X-API-Key": key, accept: "application/json" },
-    maxRedirects: 0,
-  });
-  if (response.status < 200 || response.status >= 300)
-    throw new Error(
-      `TwitterAPI.io request failed with HTTP ${response.status}`,
-    );
-  const payload = jsonObject(response.text, "TwitterAPI.io");
+  const payload = await twitterApiRequest(url, options);
   const data = configRecord(payload.data);
   const tweets = payload.tweets ?? data?.tweets;
   if (
@@ -645,9 +694,60 @@ async function twitterApiPage(
   if (nextCursor && nextCursor.length > 8_192)
     throw new Error("TwitterAPI.io cursor exceeds length limit");
   return {
-    inputs: tweetInputs(tweets, config, maxChars, now),
+    items: tweetItems(tweets, config, maxChars, now),
     nextCursor: tweets.length ? nextCursor : null,
   };
+}
+
+/** Refresh a bounded set of known posts; absent IDs remain absent in the result. */
+export async function fetchTwitterApiTweetsByIds(
+  ids: string[],
+  options: SourceOptions,
+): Promise<TweetItem[]> {
+  if (
+    !Array.isArray(ids) ||
+    ids.length > 20 ||
+    ids.some((id) => typeof id !== "string" || !/^\d{1,30}$/.test(id))
+  )
+    throw new Error(
+      "TwitterAPI.io tweet IDs must be an array of at most 20 numeric IDs",
+    );
+  if (!ids.length) return [];
+  const maxChars = boundedInteger(
+    options.maxChars,
+    20_000,
+    100_000,
+    "maxChars",
+  );
+  const now = options.now?.() ?? new Date();
+  if (!Number.isFinite(now.getTime()))
+    throw new Error("Discovery clock must return a valid Date");
+  const requested = new Set(ids);
+  const url = new URL("/twitter/tweets", "https://api.twitterapi.io");
+  url.searchParams.set("tweet_ids", [...requested].join(","));
+  const payload = await twitterApiRequest(url, options);
+  const tweets = payload.tweets ?? configRecord(payload.data)?.tweets;
+  if (
+    !Array.isArray(tweets) ||
+    tweets.length > 20 ||
+    payload.error ||
+    (payload.status !== undefined && payload.status !== "success") ||
+    (payload.code !== undefined && payload.code !== 0)
+  )
+    throw new Error("TwitterAPI.io returned an invalid tweets response");
+  if (
+    tweets.some((tweet) => {
+      const id = configRecord(tweet)?.id;
+      return (
+        typeof id === "string" && /^\d{1,30}$/.test(id) && !requested.has(id)
+      );
+    })
+  )
+    throw new Error("TwitterAPI.io returned an unrequested tweet ID");
+  const items = tweetItems(tweets, null, maxChars, now);
+  for (const { input, snapshot } of items)
+    options.onSocialSnapshot?.(input, snapshot);
+  return items;
 }
 
 function configRecord(value: unknown): Record<string, unknown> | null {
@@ -895,6 +995,48 @@ function readCheckpoint(
     )
   )
     throw new Error("Invalid source checkpoint");
+  const pendingSnapshots = record.pendingSnapshots;
+  if (
+    pendingSnapshots !== undefined &&
+    (!Array.isArray(pendingSnapshots) ||
+      pendingSnapshots.length !== pending.length ||
+      pendingSnapshots.some((value, index) => {
+        if (value === null) return false;
+        const snapshot = configRecord(value);
+        const id = /\/status\/(\d+)$/.exec(pending[index].url)?.[1];
+        return (
+          !snapshot ||
+          snapshot.tweetId !== id ||
+          (snapshot.authorId !== null &&
+            (typeof snapshot.authorId !== "string" ||
+              !/^\d{1,30}$/.test(snapshot.authorId))) ||
+          typeof snapshot.authorHandle !== "string" ||
+          !/^(?:[A-Za-z0-9_]{1,15})?$/.test(snapshot.authorHandle) ||
+          (snapshot.authorName !== null &&
+            typeof snapshot.authorName !== "string") ||
+          !["original", "quote", "reply", "repost"].includes(
+            String(snapshot.postType),
+          ) ||
+          (snapshot.quotedTweetId !== null &&
+            (typeof snapshot.quotedTweetId !== "string" ||
+              !/^\d{1,30}$/.test(snapshot.quotedTweetId))) ||
+          (snapshot.publishedAt !== null &&
+            (typeof snapshot.publishedAt !== "string" ||
+              normalizedDate(snapshot.publishedAt) !== snapshot.publishedAt)) ||
+          typeof snapshot.observedAt !== "number" ||
+          !Number.isSafeInteger(snapshot.observedAt) ||
+          snapshot.observedAt < 0 ||
+          ["views", "likes", "replies", "reposts", "quotes", "bookmarks"].some(
+            (key) =>
+              snapshot[key] !== null &&
+              (typeof snapshot[key] !== "number" ||
+                !Number.isSafeInteger(snapshot[key]) ||
+                Number(snapshot[key]) < 0),
+          )
+        );
+      }))
+  )
+    throw new Error("Invalid source checkpoint");
   return {
     version: 1,
     sourceKey,
@@ -905,6 +1047,9 @@ function readCheckpoint(
     remainingItems: Number(record.remainingItems),
     seenCursors: record.seenCursors as string[],
     seenIds: record.seenIds as string[],
+    ...(pendingSnapshots !== undefined
+      ? { pendingSnapshots: pendingSnapshots as Array<XPostSnapshot | null> }
+      : {}),
   };
 }
 
@@ -951,10 +1096,14 @@ export async function discoverSourceBatch(
       boundedInteger(options.maxPages, 5, 5, "maxPages"),
     );
     let state: Exclude<SourceReadCheckpoint, { kind: "snapshot" }>;
+    let fetchedPage = false;
     if (checkpoint?.kind === kind) {
       state = {
         ...checkpoint,
         pending: [...checkpoint.pending],
+        pendingSnapshots: checkpoint.pending.map(
+          (_, index) => checkpoint.pendingSnapshots?.[index] ?? null,
+        ),
         seenCursors: [...checkpoint.seenCursors],
         seenIds: [...checkpoint.seenIds],
       };
@@ -964,6 +1113,7 @@ export async function discoverSourceBatch(
         sourceKey,
         kind,
         pending: [],
+        pendingSnapshots: [],
         nextCursor: null,
         pagesRead: 0,
         remainingItems: fullLimit,
@@ -993,6 +1143,7 @@ export async function discoverSourceBatch(
               now,
               cursor,
             );
+      fetchedPage = true;
       state.pagesRead += 1;
       if (cursor) state.seenCursors.push(cursor);
       if (page.nextCursor && state.seenCursors.includes(page.nextCursor))
@@ -1000,20 +1151,32 @@ export async function discoverSourceBatch(
           `${kind === "getx" ? "GetXAPI" : "TwitterAPI.io"} repeated a pagination cursor`,
         );
       const seenIds = new Set(state.seenIds);
-      state.pending = page.inputs
-        .filter((input) => {
+      const pageItems = page.items
+        .filter(({ input }) => {
           const id = /\/status\/(\d+)$/.exec(input.url)?.[1];
           if (!id || seenIds.has(id)) return false;
           seenIds.add(id);
           return true;
         })
         .slice(0, state.remainingItems);
+      state.pending = pageItems.map(({ input }) => input);
+      state.pendingSnapshots = pageItems.map(({ snapshot }) => snapshot);
+      for (const { input, snapshot } of page.items)
+        options.onSocialSnapshot?.(input, snapshot);
       state.seenIds.push(
         ...state.pending.map((input) => /\/status\/(\d+)$/.exec(input.url)![1]),
       );
       state.nextCursor = state.pagesRead < pageLimit ? page.nextCursor : null;
     }
     const inputs = state.pending.splice(0, batchSize);
+    const replayedSnapshots =
+      state.pendingSnapshots?.splice(0, batchSize) ?? [];
+    if (!fetchedPage && checkpoint?.kind === kind) {
+      inputs.forEach((input, index) => {
+        const snapshot = replayedSnapshots[index];
+        if (snapshot) options.onSocialSnapshot?.(input, snapshot);
+      });
+    }
     state.remainingItems -= inputs.length;
     const complete =
       state.remainingItems === 0 ||

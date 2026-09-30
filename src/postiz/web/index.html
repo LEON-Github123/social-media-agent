@@ -289,15 +289,61 @@
               <div>
                 <span class="eyebrow">03 / DECIDE</span>
                 <h2 id="topics-title">素材审批</h2>
-                <p>
+                <p id="topics-description">
                   按同一事件归组查看来源和模型判断；批准写作会使用今日额度并送至
                   Postiz 草稿。
                 </p>
               </div>
               <span id="topic-count" class="count"></span>
             </div>
+            <div
+              id="social-review-controls"
+              class="social-review-controls"
+              hidden
+            >
+              <p id="social-quota" class="item-meta"></p>
+              <div
+                id="social-review-tabs"
+                class="social-review-tabs"
+                role="tablist"
+                aria-label="竞品素材分类"
+              >
+                <button
+                  type="button"
+                  class="button ghost"
+                  role="tab"
+                  data-social-tab="recommended"
+                >
+                  今日推荐
+                </button>
+                <button
+                  type="button"
+                  class="button ghost"
+                  role="tab"
+                  data-social-tab="watch"
+                >
+                  待观察
+                </button>
+                <button
+                  type="button"
+                  class="button ghost"
+                  role="tab"
+                  data-social-tab="errors"
+                >
+                  处理异常
+                </button>
+                <button
+                  type="button"
+                  class="button ghost"
+                  role="tab"
+                  data-social-tab="history"
+                >
+                  历史记录
+                </button>
+              </div>
+            </div>
             <div class="card list-card">
-              <div id="topics-list" class="list"></div>
+              <div id="topics-list" class="list" role="tabpanel"></div>
             </div>
           </section>
 

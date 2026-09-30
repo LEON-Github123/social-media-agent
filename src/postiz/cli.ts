@@ -13,6 +13,7 @@ import { createContentModel, type ContentModel } from "./models.js";
 import { generateContent } from "./content.js";
 import { validateJobInput, validateSourceInputs } from "./validation.js";
 import { collectSources } from "./collector.js";
+import { collectCompetitorSources } from "./social-pipeline.js";
 import { buildOperationsReport, type ReportCollection } from "./reports.js";
 import {
   ContentJobStore,
@@ -33,7 +34,7 @@ const HELP = `Content worker for Postiz (Node.js 24+)
   yarn postiz:cli candidates [--id CANDIDATE_ID]
   yarn postiz:cli topics [--id TOPIC_ID]
   yarn postiz:cli retry-candidate --id CANDIDATE_ID --reason TEXT [--confirm-new-event]
-  yarn postiz:cli review-topic --id TOPIC_ID --decision approve|reject --reason TEXT [--merge-with TOPIC_ID]
+  yarn postiz:cli review-topic --id TOPIC_ID --decision approve|reject --reason TEXT [--writing-angle TEXT] [--merge-with TOPIC_ID]
   yarn postiz:cli work [--once] [--no-submit]
   yarn postiz:cli show [--id CONTENT_ID]
   yarn postiz:cli retry --id CONTENT_ID [--refresh-brand] [--to-draft] [--reason TEXT]
@@ -100,6 +101,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       decision: { type: "string" },
       "confirm-new-event": { type: "boolean" },
       "merge-with": { type: "string" },
+      "writing-angle": { type: "string" },
       kind: { type: "string" },
       actor: { type: "string" },
     },
@@ -144,7 +146,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     candidates: ["id"],
     topics: ["id"],
     "retry-candidate": ["id", "reason", "confirm-new-event"],
-    "review-topic": ["id", "reason", "decision", "merge-with"],
+    "review-topic": ["id", "reason", "decision", "merge-with", "writing-angle"],
     status: [],
     feedback: ["id", "kind", "reason", "actor"],
     serve: [],
@@ -276,16 +278,28 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (!Array.isArray(sourceConfigs))
       throw new Error("CONTENT_SOURCES_FILE must be a JSON array");
     if (sourceConfigs.length) requireAccount();
-    return collectSources({
-      store,
-      brandId: brand.id,
-      workerId: randomUUID(),
-      sources: sourceConfigs as SourceConfig[],
-      sourceOptions: { ...config.source, baseDir: dirname(config.sourcesFile) },
-      maxSourcesPerTick: config.maxSourcesPerTick,
-      checkIntervalMs: config.discoveryIntervalMs,
-      leaseMs: config.leaseMs,
-    });
+    const sourceOptions = {
+      ...config.source,
+      baseDir: dirname(config.sourcesFile),
+    };
+    return config.competitorMode
+      ? collectCompetitorSources({
+          store,
+          brandId: brand.id,
+          workerId: randomUUID(),
+          sources: sourceConfigs as SourceConfig[],
+          sourceOptions,
+        })
+      : collectSources({
+          store,
+          brandId: brand.id,
+          workerId: randomUUID(),
+          sources: sourceConfigs as SourceConfig[],
+          sourceOptions,
+          maxSourcesPerTick: config.maxSourcesPerTick,
+          checkIntervalMs: config.discoveryIntervalMs,
+          leaseMs: config.leaseMs,
+        });
   };
   try {
     if (
@@ -386,20 +400,34 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         throw new Error(
           "Topic review requires --id, --decision approve|reject and --reason",
         );
-      console.log(
-        JSON.stringify(
-          store.reviewTopic(values.id, {
-            brandId: brand.id,
-            decision: values.decision as "approve" | "reject",
-            reason: values.reason,
-            ...(values["merge-with"]
-              ? { mergeWith: values["merge-with"] }
+      const topic = store.getTopic(values.id);
+      const social =
+        config.competitorMode &&
+        topic?.brandId === brand.id &&
+        store
+          .listSocialStates(brand.id)
+          .some(
+            (state) =>
+              state.social &&
+              topic.sourceCandidateIds.includes(state.candidateId),
+          );
+      if (values["writing-angle"] && !social)
+        throw new Error("--writing-angle requires a competitor social topic");
+      const action = {
+        decision: values.decision as "approve" | "reject",
+        reason: values.reason,
+        ...(values["merge-with"] ? { mergeWith: values["merge-with"] } : {}),
+      };
+      const reviewed = social
+        ? store.reviewSocialTopic(values.id, {
+            ...action,
+            brand,
+            ...(values["writing-angle"]
+              ? { writingAngle: values["writing-angle"] }
               : {}),
-          }),
-          null,
-          2,
-        ),
-      );
+          })
+        : store.reviewTopic(values.id, { ...action, brandId: brand.id });
+      console.log(JSON.stringify(reviewed, null, 2));
     } else if (command === "show") {
       const validStates: ContentJobState[] = [
         "queued",

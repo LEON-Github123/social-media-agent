@@ -8,6 +8,7 @@ import { safeError } from "./config.js";
 import {
   validateJobInput,
   validateOutputSourcesForJob,
+  type ContentPurpose,
   type Revision,
 } from "./validation.js";
 import {
@@ -32,6 +33,9 @@ export interface JobInput {
   integrationId: string;
   mediaPaths: string[];
   revision?: Revision;
+  purpose?: ContentPurpose;
+  writingAngle?: string;
+  inspirationRequiresFacts?: boolean;
   sourceEvidenceSnapshot?: true;
 }
 
@@ -236,6 +240,9 @@ export async function submitNext(options: {
       const reasons = validatePost(output.post, {
         brand: input.brand,
         sources: validateOutputSourcesForJob(input, output.sources),
+        purpose: input.purpose,
+        writingAngle: input.writingAngle,
+        inspirationRequiresFacts: input.inspirationRequiresFacts,
       });
       if (reasons.length)
         throw new Error(

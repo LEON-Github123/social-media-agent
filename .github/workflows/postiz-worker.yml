@@ -53,6 +53,8 @@ jobs:
       - run: npm install --global yarn@1.22.22
       - run: yarn install --frozen-lockfile --ignore-scripts
       - run: yarn postiz:check
+      - name: Install browser for the review-workbench regression
+        run: node node_modules/playwright/cli.js install --with-deps chromium
       - run: yarn postiz:test
       - run: yarn postiz:build
       - run: node dist-postiz/src/postiz/cli.js --help

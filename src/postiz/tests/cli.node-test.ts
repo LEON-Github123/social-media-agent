@@ -15,6 +15,13 @@ void test("configuration rejects invalid automation controls and strips known cr
   assert.equal(readConfig({}).discoveryIntervalMs, 86_400_000);
   assert.equal(readConfig({ CONTENT_AUTO_SUBMIT: "false" }).autoSubmit, false);
   assert.equal(readConfig({}).allowScheduling, false);
+  assert.equal(readConfig({}).competitorMode, false);
+  assert.equal(
+    readConfig({ CONTENT_COMPETITOR_MODE: "true" }).competitorMode,
+    true,
+  );
+  assert.throws(() => readConfig({ CONTENT_COMPETITOR_MODE: "yes" }));
+  assert.throws(() => readConfig({ CONTENT_COMPETITOR_MODE: "" }));
   assert.equal(
     readConfig({ CONTENT_ALLOW_SCHEDULING: "true" }).allowScheduling,
     true,

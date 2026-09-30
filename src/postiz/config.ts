@@ -37,6 +37,7 @@ export interface WorkerConfig {
   maxJobsPerTick: number;
   autoSubmit: boolean;
   allowScheduling: boolean;
+  competitorMode?: boolean;
   dailyGenerationLimit: number;
   dailyTimeZone: string;
   selectionBatchSize: number;
@@ -75,6 +76,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const allowScheduling = env.CONTENT_ALLOW_SCHEDULING || "false";
   if (allowScheduling !== "true" && allowScheduling !== "false")
     throw new Error("CONTENT_ALLOW_SCHEDULING must be true or false");
+  const competitorMode = env.CONTENT_COMPETITOR_MODE ?? "false";
+  if (competitorMode !== "true" && competitorMode !== "false")
+    throw new Error("CONTENT_COMPETITOR_MODE must be true or false");
   const dailyTimeZone = env.CONTENT_DAILY_TIMEZONE || "Asia/Shanghai";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: dailyTimeZone }).format(0);
@@ -142,6 +146,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     maxJobsPerTick: positiveInt(env, "CONTENT_MAX_JOBS_PER_TICK", 3, 1, 100),
     autoSubmit: autoSubmit === "true",
     allowScheduling: allowScheduling === "true",
+    competitorMode: competitorMode === "true",
     dailyGenerationLimit: positiveInt(
       env,
       "CONTENT_DAILY_GENERATION_LIMIT",

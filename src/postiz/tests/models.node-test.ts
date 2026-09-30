@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { createContentModel } from "../models.js";
+import { ContentModelError, createContentModel } from "../models.js";
 
 void test("OpenAI-compatible adapter forwards an explicit thinking switch without streaming or tools", async (t) => {
   const requests: Record<string, unknown>[] = [];
@@ -63,5 +63,74 @@ void test("OpenAI-compatible adapter forwards an explicit thinking switch withou
         thinking: "disabled",
       }),
     /OpenAI-compatible/,
+  );
+});
+
+void test("truncated model output is classified without exposing provider text", async (t) => {
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(
+      JSON.stringify({
+        id: "truncated",
+        object: "chat.completion",
+        created: 1,
+        model: "fixture",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "length",
+            message: {
+              role: "assistant",
+              content: "partial secret-like content",
+            },
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await assert.rejects(
+    createContentModel({
+      provider: "openai",
+      model: "fixture",
+      apiKey: "test-key",
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    }).invoke({ task: "selection", system: "x", user: "x" }),
+    (error: unknown) =>
+      error instanceof ContentModelError &&
+      error.code === "truncated" &&
+      !error.message.includes("secret-like"),
+  );
+});
+
+void test("rate limiting is classified with a safe message", async (t) => {
+  const server = createServer((_request, response) => {
+    response.statusCode = 429;
+    response.setHeader("Content-Type", "application/json");
+    response.end(
+      JSON.stringify({ error: { message: "private upstream request" } }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await assert.rejects(
+    createContentModel({
+      provider: "openai",
+      model: "fixture",
+      apiKey: "test-key",
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    }).invoke({ task: "selection", system: "x", user: "x" }),
+    (error: unknown) =>
+      error instanceof ContentModelError &&
+      error.code === "rate_limit" &&
+      !error.message.includes("private upstream"),
   );
 });

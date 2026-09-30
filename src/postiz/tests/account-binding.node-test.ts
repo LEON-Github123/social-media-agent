@@ -211,7 +211,7 @@ void test("version four upgrades with a consistent backup and keeps historical j
   f.close(initial);
   const raw = new DatabaseSync(f.path);
   raw.exec(
-    "DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations; DROP TABLE brand_facts",
+    "DROP TABLE social_topic_intents; DROP TABLE social_provider_calls; DROP TABLE social_candidates; DROP TABLE social_observations; DROP TABLE workbench_events; DROP TABLE workbench_runtime; DROP TABLE brand_integrations; DROP TABLE brand_facts",
   );
   raw.exec("ALTER TABLE postiz_content_jobs DROP COLUMN writing_approved");
   raw.exec("ALTER TABLE content_topics DROP COLUMN approved_sources_json");
@@ -221,7 +221,9 @@ void test("version four upgrades with a consistent backup and keeps historical j
   const upgraded = f.open();
   assert.ok(upgraded.migrationBackupPath);
   assert.ok(existsSync(upgraded.migrationBackupPath));
-  assert.ok(readdirSync(f.directory).some((name) => name.includes(".pre-v9-")));
+  assert.ok(
+    readdirSync(f.directory).some((name) => name.includes(".pre-v10-")),
+  );
   const backup = new DatabaseSync(upgraded.migrationBackupPath, {
     readOnly: true,
   });
