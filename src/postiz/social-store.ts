@@ -564,7 +564,7 @@ export abstract class SocialContentStore extends ContentOperationsStore {
     if (!candidate || candidate.brandId !== brandId)
       throw new JobConflictError("素材不存在");
     const history = this.recoveryHistory(brandId, candidateId);
-    const last = history.at(-1);
+    const last = history[history.length - 1];
     const completed =
       last &&
       this.db
@@ -620,7 +620,8 @@ export abstract class SocialContentStore extends ContentOperationsStore {
         .prepare("SELECT * FROM social_candidates WHERE candidate_id=?")
         .get(id);
       const state = this.socialRecoveryStatus(options.brand.id, id);
-      const last = this.recoveryHistory(options.brand.id, id).at(-1);
+      const history = this.recoveryHistory(options.brand.id, id);
+      const last = history[history.length - 1];
       const expiredLock =
         row?.held &&
         last &&
@@ -734,7 +735,8 @@ export abstract class SocialContentStore extends ContentOperationsStore {
       const row = this.db
         .prepare("SELECT * FROM social_candidates WHERE candidate_id=?")
         .get(id);
-      const last = this.recoveryHistory(options.brand.id, id).at(-1);
+      const history = this.recoveryHistory(options.brand.id, id);
+      const last = history[history.length - 1];
       const humanChanged = this.recoveryHumanChanged(
         options.brand.id,
         id,
