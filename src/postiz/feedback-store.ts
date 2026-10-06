@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { SocialContentStore } from "./social-store.js";
+import { EditorialContentStore } from "./editorial-store.js";
 import { JobConflictError } from "./store-errors.js";
 import { stableHash } from "./identity.js";
 import { sourceUrlSchema } from "./validation.js";
@@ -55,7 +55,7 @@ function nullable(value: unknown): string | null {
 }
 
 /** Append-only feedback, observed remote snapshots, and model-call accounting. */
-export abstract class ContentFeedbackStore extends SocialContentStore {
+export abstract class ContentFeedbackStore extends EditorialContentStore {
   private historyRows(
     table: "content_feedback" | "postiz_observations" | "writing_model_calls",
     timeColumn: "created_at" | "observed_at" | "started_at",

@@ -1065,3 +1065,18 @@ code {
     transform: rotate(360deg);
   }
 }
+
+.editorial-preferences {
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.editorial-preferences > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+#social-freshness {
+  margin-bottom: 1rem;
+}
+#social-freshness .selected {
+  border-color: currentColor;
+}

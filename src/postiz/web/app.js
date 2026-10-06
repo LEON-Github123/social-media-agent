@@ -12,6 +12,8 @@
     snapshotHealthy: false,
     timer: null,
     socialTab: "recommended",
+    freshness: "new",
+    editorialDirty: false,
     renderedCompetitorMode: null,
   };
   const statusNames = {
@@ -235,12 +237,16 @@
         expired ? "登录已过期，请重新输入工作台密码" : "请先登录工作台",
       );
     }
-    if (!response.ok)
-      throw new Error(
-        typeof data?.error === "string"
-          ? data.error
-          : `请求失败（${response.status}）`,
+    if (!response.ok) {
+      const error = new Error(
+        path === "/api/editorial/preferences" && response.status === 409
+          ? "偏好版本已更新。输入已保留；请载入最新偏好，核对后重新确认。"
+          : typeof data?.error === "string"
+            ? data.error
+            : `请求失败（${response.status}）`,
       );
+      throw error;
+    }
     return data;
   }
 
@@ -424,6 +430,7 @@
     document.querySelector('.side-nav a[href="#candidates"]').hidden =
       !!s.competitorMode;
     $("social-review-controls").hidden = !s.competitorMode;
+    $("social-freshness").hidden = !s.competitorMode;
     $("topics-title").textContent = s.competitorMode
       ? "竞品素材审批"
       : "素材审批";
@@ -440,6 +447,7 @@
       else renderTopics(topics);
     }
     state.renderedCompetitorMode = !!s.competitorMode;
+    renderEditorial(s);
     renderJobs(jobs);
     if (!activeFormIn("brand-fact-list")) renderBrandFacts(array(s.brandFacts));
     renderSources(array(s.sources));
@@ -592,6 +600,88 @@
       target.append(row);
     });
   }
+  const editorialTags = [
+    { value: "too_broad", label: "太泛" },
+    { value: "not_relevant", label: "不相关" },
+    { value: "repetitive", label: "重复" },
+    { value: "useful_topic", label: "有用选题" },
+    { value: "good_expression", label: "表达值得借鉴" },
+    { value: "product_demo", label: "产品演示" },
+  ];
+  function renderEditorial(snapshot) {
+    const target = $("editorial-preferences");
+    target.hidden = !snapshot.competitorMode || !snapshot.editorial;
+    if (target.hidden) return;
+    const summary = snapshot.editorial.feedbackSummary || {};
+    $("editorial-summary").textContent =
+      `反馈样本：${summary.uniqueCandidates ?? 0} 条素材 · ${editorialTags.map((tag) => `${tag.label} ${summary.tagCounts?.[tag.value] ?? 0}`).join(" · ")}`;
+    $("editorial-suggestions").textContent =
+      array(summary.suggestions).join("\n") || "暂无程序建议。";
+    if (state.editorialDirty || activeFormIn("editorial-form")) return;
+    const profile = snapshot.editorial.profile || {};
+    clear($("editorial-form"));
+    const specs = [
+      {
+        ...textareaField(
+          "selectionGuidance",
+          "选材偏好",
+          false,
+          profile.selectionGuidance,
+        ),
+        maxLength: 1200,
+      },
+      {
+        ...textareaField(
+          "writingGuidance",
+          "写作风格",
+          false,
+          profile.writingGuidance,
+        ),
+        maxLength: 1200,
+      },
+      ...[0, 1, 2].map((index) => ({
+        ...textareaField(
+          `example${index}`,
+          `英文风格样本 ${index + 1}（可选）`,
+          false,
+          array(profile.examples)[index],
+        ),
+        maxLength: 600,
+      })),
+    ];
+    const form = actionForm("确认并应用偏好", specs, async (values) => {
+      if (state.busy || !state.snapshotHealthy) return;
+      setBusy(true);
+      try {
+        const result = await request("/api/editorial/preferences", "POST", {
+          expectedVersion: profile.version ?? 0,
+          selectionGuidance: values.selectionGuidance,
+          writingGuidance: values.writingGuidance,
+          examples: [values.example0, values.example1, values.example2].filter(
+            Boolean,
+          ),
+          confirmed: true,
+        });
+        if (result?.accepted !== true)
+          throw new Error("偏好未被接受，请核对后重试。");
+        if (result.profile) state.snapshot.editorial.profile = result.profile;
+        state.editorialDirty = false;
+        form.open = false;
+        document.activeElement?.blur();
+        note("偏好已应用；事实核查、额度和人工批准规则仍然有效。", "success");
+      } catch (error) {
+        note(error.message, "error");
+      } finally {
+        setBusy(false);
+        await refresh({ quiet: true, preserveForm: true });
+      }
+    });
+    form.addEventListener("input", () => {
+      state.editorialDirty = true;
+    });
+    $("editorial-form").append(form);
+  }
+
   function renderSocialTopics(snapshot) {
     const target = $("topics-list");
     const candidates = new Map(
@@ -600,11 +690,21 @@
     const social = new Map(
       array(snapshot.socialCandidates).map((item) => [item.candidateId, item]),
     );
+    const socialOrder = new Map(
+      array(snapshot.socialCandidates).map((item, index) => [
+        item.candidateId,
+        index,
+      ]),
+    );
     const linked = new Set();
     const entries = array(snapshot.topics).map((topic) => {
       const states = array(topic.sourceCandidateIds)
         .map((id) => social.get(id))
-        .filter(Boolean);
+        .filter(Boolean)
+        .sort(
+          (a, b) =>
+            socialOrder.get(a.candidateId) - socialOrder.get(b.candidateId),
+        );
       states.forEach((item) => linked.add(item.candidateId));
       const selected =
         states.find((item) => item.tier === "recommended") ||
@@ -659,11 +759,52 @@
     $("social-quota").textContent = quota
       ? `今日 X 数据请求 ${quota.provider?.used ?? "—"}/${quota.provider?.limit ?? 10} · AI 评估 ${quota.selection?.used ?? "—"}/${quota.selection?.limit ?? 40}`
       : "竞品处理额度暂不可用";
+    const recommended = entries.filter(
+      (entry) => tabFor(entry) === "recommended",
+    );
+    const hasFreshness = array(snapshot.socialCandidates).some(
+      (item) => item.editorial?.bucket,
+    );
+    const freshnessNames = {
+      new: "今日新发现",
+      rising: "传播上升",
+      backlog: "历史待办",
+      all: "全部",
+    };
+    $("social-freshness").hidden = state.socialTab !== "recommended";
+    $("social-freshness")
+      .querySelectorAll("[data-freshness]")
+      .forEach((button) => {
+        const bucket = button.dataset.freshness;
+        const count =
+          bucket === "all"
+            ? recommended.length
+            : recommended.filter(
+                (entry) => entry.selected?.editorial?.bucket === bucket,
+              ).length;
+        button.textContent = `${freshnessNames[bucket]} ${count}`;
+        button.setAttribute(
+          "aria-pressed",
+          String(hasFreshness ? bucket === state.freshness : bucket === "all"),
+        );
+        button.classList.toggle(
+          "selected",
+          hasFreshness ? bucket === state.freshness : bucket === "all",
+        );
+      });
     const visible = entries
-      .filter((entry) => tabFor(entry) === state.socialTab)
+      .filter(
+        (entry) =>
+          tabFor(entry) === state.socialTab &&
+          (state.socialTab !== "recommended" ||
+            !hasFreshness ||
+            state.freshness === "all" ||
+            entry.selected?.editorial?.bucket === state.freshness),
+      )
       .sort(
         (a, b) =>
-          (b.selected?.score ?? -1) - (a.selected?.score ?? -1) ||
+          (socialOrder.get(a.selected?.candidateId) ?? Infinity) -
+            (socialOrder.get(b.selected?.candidateId) ?? Infinity) ||
           (b.topic?.createdAt ?? 0) - (a.topic?.createdAt ?? 0),
       );
     $("topic-count").textContent = `${visible.length} 条`;
@@ -707,6 +848,30 @@
           `${selected?.social?.authorHandle ? `@${selected.social.authorHandle}` : "作者未提供"} · ${topic ? `选题 ${shortId(topic.id)}` : "尚未形成选题"}`,
         ),
       );
+      if (selected?.editorial) {
+        const editorial = selected.editorial;
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            `发现于 ${time(editorial.firstSeenAt)} · 未处理 ${editorial.waitingDays ?? 0} 天 · 指标更新 ${time(selected.social?.observedAt)}`,
+          ),
+        );
+        if (editorial.reason)
+          row.append(node("p", "reason", `推荐变化：${editorial.reason}`));
+        if (editorial.snoozedUntil)
+          row.append(
+            node(
+              "p",
+              "item-meta",
+              `暂存至 ${time(editorial.snoozedUntil)}，到期后自动恢复处理。`,
+            ),
+          );
+      }
+      if (selected?.limitReason)
+        row.append(
+          node("p", "inline-warning", `推荐限制：${selected.limitReason}`),
+        );
       if (assessment?.summary)
         row.append(node("p", "social-summary", assessment.summary));
       if (assessment?.reason)
@@ -1004,15 +1169,57 @@
         state.socialTab !== "history"
       ) {
         const actions = node("div", "topic-actions");
+        const basePath = `/api/social-candidates/${encodeURIComponent(selected.candidateId)}`;
+        const seen = node(
+          "button",
+          "button ghost",
+          selected.editorial?.seenAt ? "已看过（再次标记）" : "已看过",
+        );
+        seen.type = "button";
+        seen.addEventListener("click", () =>
+          mutateSocial(
+            `${basePath}/seen`,
+            {},
+            "已标记看过；尚未批准或跳过素材。",
+          ),
+        );
+        actions.append(
+          seen,
+          actionForm(
+            "记录选材反馈",
+            [
+              selectField("tag", "反馈标签", editorialTags),
+              field("note", "反馈备注（可选）", false),
+            ],
+            (values) =>
+              mutateSocial(
+                `${basePath}/feedback`,
+                {
+                  tag: values.tag,
+                  ...(values.note ? { note: values.note } : {}),
+                },
+                "反馈已记录；尚未批准或跳过素材。",
+              ),
+          ),
+        );
         if (!selected.held)
           actions.append(
             actionForm(
               "暂存观察",
-              [field("reason", "暂存原因", true)],
+              [
+                field("reason", "暂存原因", true),
+                selectField("duration", "暂存到", [
+                  { value: "hold", label: "等我继续处理" },
+                  { value: "1", label: "明天09:00" },
+                  { value: "3", label: "三天后09:00" },
+                ]),
+              ],
               async (values) =>
                 mutateSocial(
-                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/hold`,
-                  { held: true, reason: values.reason },
+                  `${basePath}/${values.duration === "hold" ? "hold" : "snooze"}`,
+                  values.duration === "hold"
+                    ? { held: true, reason: values.reason }
+                    : { days: Number(values.duration), reason: values.reason },
                   "已暂存观察。",
                 ),
             ),
@@ -2236,6 +2443,7 @@
         input.value = spec.value || "";
         input.required = !!spec.required;
       }
+      if (spec.maxLength) input.maxLength = spec.maxLength;
       input.id = id;
       input.name = spec.name;
       form.append(input);
@@ -2304,6 +2512,19 @@
     state.socialTab = tab;
     renderSocialTopics(state.snapshot);
     setBusy(state.busy);
+  });
+  $("social-freshness").addEventListener("click", (event) => {
+    const bucket = event.target.closest("[data-freshness]")?.dataset.freshness;
+    if (!bucket || !state.snapshot?.competitorMode) return;
+    state.freshness = bucket;
+    renderSocialTopics(state.snapshot);
+    setBusy(state.busy);
+  });
+  $("editorial-reload").addEventListener("click", () => {
+    state.editorialDirty = false;
+    clear($("editorial-form"));
+    document.activeElement?.blur();
+    renderEditorial(state.snapshot);
   });
   $("run").addEventListener("click", () =>
     mutate("/api/run", {}, "流程已启动，进度会自动更新。"),

@@ -1,4 +1,8 @@
-import { validateJobInput, type BrandConfig } from "./validation.js";
+import {
+  validateBrand,
+  validateJobInput,
+  type BrandConfig,
+} from "./validation.js";
 import { safeError } from "./config.js";
 import { loadSource, type SourceOptions } from "./sources.js";
 import { selectCandidates } from "./selector.js";
@@ -133,7 +137,21 @@ export function enqueueApprovedTopics(options: {
           `Topic ${topic.id}: writing uses ${sources.length} whole sources within the evidence limit; all sources remain in the candidate pool`,
         );
       const intent = store.getTopicIntent(topic.id);
+      let writingBrand = brand;
       if (intent) {
+        const snapshot = store.getTopicApprovalSnapshot(topic.id);
+        const approvedBrand =
+          snapshot && typeof snapshot === "object" && "brand" in snapshot
+            ? validateBrand(snapshot.brand)
+            : null;
+        if (approvedBrand && approvedBrand.id !== brand.id)
+          throw new Error("Approval snapshot does not match the topic brand");
+        // An older approval with no editorial profile must not inherit one
+        // that was confirmed after the human chose this topic.
+        writingBrand = {
+          ...brand,
+          editorialPreferences: approvedBrand?.editorialPreferences,
+        };
         const readiness = store.brandWritingReadiness(brand, sources, intent);
         if (!readiness.ready) {
           warnings.push(`Topic ${topic.id}: ${readiness.missing.join("; ")}`);
@@ -147,7 +165,7 @@ export function enqueueApprovedTopics(options: {
           }))
         : sources;
       const input = validateJobInput({
-        brand: store.brandWithKnowledge(brand, factMatchSources),
+        brand: store.brandWithKnowledge(writingBrand, factMatchSources),
         sources,
         integrationId: options.integrationId,
         mediaPaths: [],

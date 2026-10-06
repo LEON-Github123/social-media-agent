@@ -19,6 +19,7 @@ import {
 import { selectAndQueue } from "./pipeline.js";
 import { generateNext, submitNext, syncSubmitted } from "./runner.js";
 import { validateJobInput } from "./validation.js";
+import { withEditorialPreferences } from "./editorial-preferences.js";
 import type { ContentJobStore } from "./store.js";
 import type { PostizClient } from "./postiz-client.js";
 
@@ -43,7 +44,11 @@ export interface TickDependencies {
 export async function runWorkbenchTick(
   options: TickDependencies,
 ): Promise<void> {
-  const { store, config, brand } = options;
+  const { store, config } = options;
+  const brand = withEditorialPreferences(
+    options.brand,
+    store.getEditorialPreferences(options.brand.id),
+  );
   const emit = (
     stage: string,
     status: "start" | "finish" | "error",
@@ -74,6 +79,7 @@ export async function runWorkbenchTick(
     return documents;
   };
   store.recoverExpired();
+  store.resumeDueEditorialSnoozes(brand.id);
   if (
     config.postiz.integrationId ||
     store.list({ brandId: brand.id, limit: 1 }).length ||

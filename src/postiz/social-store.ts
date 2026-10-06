@@ -245,7 +245,10 @@ export abstract class SocialContentStore extends ContentOperationsStore {
     activeSourceIds?: string[],
   ): SocialCandidateState[] {
     const history = this.socialHistory(brandId);
-    const states = this.listCandidates({ brandId, limit: 10000 })
+    const states: SocialCandidateState[] = this.listCandidates({
+      brandId,
+      limit: 10000,
+    })
       .filter((candidate) => candidate.origin === "twitterapi-user")
       .map((candidate) => {
         const row = this.db
@@ -326,23 +329,34 @@ export abstract class SocialContentStore extends ContentOperationsStore {
           held,
         };
       });
-    states.sort(
-      (a, b) =>
-        (b.score ?? -1) - (a.score ?? -1) ||
-        a.candidateId.localeCompare(b.candidateId),
-    );
+    this.orderSocialStates(brandId, states);
     let recommended = 0;
     const accounts = new Map<string, number>();
     for (const state of states.filter((item) => item.tier === "recommended")) {
       const account = state.social!.authorHandle.toLowerCase();
-      if (recommended >= 10 || (accounts.get(account) ?? 0) >= 3)
+      if (recommended >= 10 || (accounts.get(account) ?? 0) >= 3) {
         state.tier = "watch";
-      else {
+        state.limitReason =
+          (accounts.get(account) ?? 0) >= 3
+            ? "同一账号最多推荐 3 条，已保留排序更靠前的素材"
+            : "最多推荐 10 条，已保留排序更靠前的素材";
+      } else {
         recommended++;
         accounts.set(account, (accounts.get(account) ?? 0) + 1);
       }
     }
     return states;
+  }
+
+  protected orderSocialStates(
+    _brandId: string,
+    states: SocialCandidateState[],
+  ): void {
+    states.sort(
+      (a, b) =>
+        (b.score ?? -1) - (a.score ?? -1) ||
+        a.candidateId.localeCompare(b.candidateId),
+    );
   }
 
   socialEvaluationCandidates(
@@ -1000,6 +1014,17 @@ export abstract class SocialContentStore extends ContentOperationsStore {
     );
     result.selection.modelCalls = 0;
     return this.finishSocialRecovery(options, batch.claim, result);
+  }
+
+  getTopicApprovalSnapshot(topicId: string): unknown | null {
+    const row = this.db
+      .prepare(
+        "SELECT approval_snapshot_json FROM social_topic_intents WHERE topic_id=?",
+      )
+      .get(topicId);
+    return row?.approval_snapshot_json
+      ? JSON.parse(String(row.approval_snapshot_json))
+      : null;
   }
 
   getTopicIntent(topicId: string): WritingIntent | null {

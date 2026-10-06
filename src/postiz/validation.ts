@@ -23,6 +23,12 @@ export interface BrandConfig {
     expiresAt?: number;
   }[];
   maxPostLength?: number;
+  editorialPreferences?: {
+    version: number;
+    selectionGuidance: string;
+    writingGuidance: string;
+    examples: string[];
+  };
 }
 
 export interface SourceInput {
@@ -126,6 +132,15 @@ export const brandSchema = z.object({
     .max(50)
     .default([]),
   maxPostLength: z.number().int().min(30).max(280).default(280),
+  editorialPreferences: z
+    .object({
+      version: z.number().int().positive(),
+      selectionGuidance: z.string().trim().max(1200),
+      writingGuidance: z.string().trim().max(1200),
+      examples: z.array(nonempty(600)).max(3),
+    })
+    .strict()
+    .optional(),
 });
 
 const publishedAtSchema = nonempty(100)

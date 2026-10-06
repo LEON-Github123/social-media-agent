@@ -1,6 +1,7 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import twitterText from "twitter-text";
 import { z } from "zod";
+import { EDITORIAL_PREFERENCE_RULE } from "./editorial-preferences.js";
 import type { ContentModel } from "./models.js";
 import {
   validateContentInput,
@@ -243,13 +244,18 @@ function timeContext(sources: SourceDocument[], now: number): string {
 }
 
 function brandContext(brand: BrandConfig): string {
-  return JSON.stringify({
-    brand: brand.name,
-    audience: brand.audience,
-    businessContext: brand.businessContext,
-    language: brand.language,
-    verifiedFacts: brand.verifiedFacts ?? [],
-  });
+  return `${brand.editorialPreferences ? `${EDITORIAL_PREFERENCE_RULE}\n` : ""}${JSON.stringify(
+    {
+      brand: brand.name,
+      audience: brand.audience,
+      businessContext: brand.businessContext,
+      language: brand.language,
+      verifiedFacts: brand.verifiedFacts ?? [],
+      ...(brand.editorialPreferences
+        ? { editorialPreferences: brand.editorialPreferences }
+        : {}),
+    },
+  )}`;
 }
 
 function sourcePayload(sources: SourceDocument[]): string {

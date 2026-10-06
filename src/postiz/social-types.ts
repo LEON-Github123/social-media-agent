@@ -2,6 +2,7 @@ import type {
   CandidateSelectionInput,
   SelectionResult,
 } from "./operations-types.js";
+import type { EditorialCandidateMetadata } from "./editorial-types.js";
 
 /** Provider observations, never accepted from a manual material request. */
 export interface XPostSnapshot {
@@ -93,4 +94,6 @@ export interface SocialCandidateState {
   errorMessage: string | null;
   evaluatedAt: number | null;
   held: boolean;
+  editorial?: EditorialCandidateMetadata;
+  limitReason?: string;
 }

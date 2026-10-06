@@ -32,6 +32,8 @@ import { JobConflictError } from "./store-errors.js";
 import { readLocalText } from "./files.js";
 import { sourceIdentity } from "./sources.js";
 import { competitorSources } from "./social-pipeline.js";
+import { withEditorialPreferences } from "./editorial-preferences.js";
+import { editorialFeedbackTags } from "./editorial-types.js";
 import { z, ZodError } from "zod";
 
 type Json = Record<string, unknown>;
@@ -138,7 +140,10 @@ export class Workbench {
   private requireBrand(): BrandConfig {
     if (!this.brand)
       throw new HttpError(503, "Brand configuration is unavailable");
-    return this.brand;
+    return withEditorialPreferences(
+      this.brand,
+      this.store.getEditorialPreferences(this.brand.id),
+    );
   }
 
   requireReady(): BrandConfig {
@@ -226,6 +231,10 @@ export class Workbench {
       brandFacts: brand ? this.store.listBrandFacts(brand.id) : [],
       competitorMode: Boolean(this.config.competitorMode),
       socialCandidates,
+      editorial:
+        brand && this.config.competitorMode
+          ? this.store.getEditorialDashboard(brand.id)
+          : null,
       socialQuotas:
         brand && this.config.competitorMode
           ? this.store.socialQuotas(brand.id)
@@ -433,6 +442,71 @@ export class Workbench {
   }
 
   async mutate(path: string, body: Json): Promise<unknown> {
+    if (path === "/api/editorial/preferences") {
+      const brand = this.requireBrand();
+      const preferences = z
+        .object({
+          expectedVersion: z.number().int().nonnegative(),
+          selectionGuidance: z.string().trim().max(1200),
+          writingGuidance: z.string().trim().max(1200),
+          examples: z.array(z.string().trim().min(1).max(600)).max(3),
+          confirmed: z.literal(true),
+        })
+        .strict()
+        .parse(body);
+      return {
+        accepted: true,
+        profile: this.store.saveEditorialPreferences({
+          brandId: brand.id,
+          ...preferences,
+        }),
+      };
+    }
+    const editorialAction =
+      /^\/api\/social-candidates\/([^/]+)\/(seen|snooze|feedback)$/.exec(path);
+    if (editorialAction) {
+      const brand = this.requireBrand();
+      const candidateId = decodeURIComponent(editorialAction[1]);
+      if (editorialAction[2] === "seen") {
+        z.object({}).strict().parse(body);
+        return {
+          accepted: true,
+          ...this.store.markEditorialSeen(brand.id, candidateId),
+        };
+      }
+      if (editorialAction[2] === "snooze") {
+        const snooze = z
+          .object({
+            days: z.union([z.literal(1), z.literal(3)]),
+            reason: z.string().trim().min(1).max(2000),
+          })
+          .strict()
+          .parse(body);
+        return {
+          accepted: true,
+          ...this.store.snoozeEditorialCandidate({
+            brandId: brand.id,
+            candidateId,
+            ...snooze,
+          }),
+        };
+      }
+      const feedback = z
+        .object({
+          tag: z.enum(editorialFeedbackTags),
+          note: z.string().trim().max(2000).optional(),
+        })
+        .strict()
+        .parse(body);
+      return {
+        accepted: true,
+        feedback: this.store.recordEditorialFeedback({
+          brandId: brand.id,
+          candidateId,
+          ...feedback,
+        }),
+      };
+    }
     if (path === "/api/brand-facts") {
       const brand = this.requireBrand();
       return { fact: this.store.createBrandFact(brand.id, body) };

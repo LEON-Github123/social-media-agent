@@ -342,6 +342,49 @@
                 </button>
               </div>
             </div>
+            <div
+              id="social-freshness"
+              class="social-review-tabs"
+              aria-label="推荐新鲜度"
+              hidden
+            >
+              <button type="button" class="button ghost" data-freshness="new">
+                今日新发现
+              </button>
+              <button
+                type="button"
+                class="button ghost"
+                data-freshness="rising"
+              >
+                传播上升
+              </button>
+              <button
+                type="button"
+                class="button ghost"
+                data-freshness="backlog"
+              >
+                历史待办
+              </button>
+              <button type="button" class="button ghost" data-freshness="all">
+                全部
+              </button>
+            </div>
+            <details
+              id="editorial-preferences"
+              class="card editorial-preferences"
+              hidden
+            >
+              <summary>人工偏好校准</summary>
+              <p id="editorial-summary" class="item-meta"></p>
+              <p id="editorial-suggestions" class="pre-wrap"></p>
+              <p class="muted">
+                偏好和英文样本用于选材与表达参考，不是品牌事实；不改变事实核查、额度和人工批准规则。清空字段后确认保存可撤销偏好。
+              </p>
+              <button id="editorial-reload" type="button" class="button ghost">
+                载入最新偏好（替换当前输入）
+              </button>
+              <div id="editorial-form"></div>
+            </details>
             <div class="card list-card">
               <div id="topics-list" class="list" role="tabpanel"></div>
             </div>
