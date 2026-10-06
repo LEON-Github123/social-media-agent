@@ -90,4 +90,12 @@ export default [
       "preserve-caught-error": 0,
     },
   },
+  {
+    files: ["src/postiz/tests/**/*.node-test.ts"],
+    languageOptions: {
+      parserOptions: {
+        project: "./tsconfig.postiz-tests.json",
+      },
+    },
+  },
 ];

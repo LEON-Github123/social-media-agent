@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.postiz.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/postiz/tests/**/*.node-test.ts"],
+  "exclude": ["node_modules", "dist", "dist-postiz"]
+}
