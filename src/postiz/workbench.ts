@@ -32,7 +32,7 @@ import { JobConflictError } from "./store-errors.js";
 import { readLocalText } from "./files.js";
 import { sourceIdentity } from "./sources.js";
 import { competitorSources } from "./social-pipeline.js";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 
 type Json = Record<string, unknown>;
 type RuntimeView = {
@@ -211,7 +211,15 @@ export class Workbench {
         : null;
     const socialCandidates =
       brand && this.config.competitorMode
-        ? this.store.listSocialStates(brand.id, [...activeSourceIds])
+        ? this.store
+            .listSocialStates(brand.id, [...activeSourceIds])
+            .map((item) => ({
+              ...item,
+              recovery: this.store.socialRecoveryStatus(
+                brand.id,
+                item.candidateId,
+              ),
+            }))
         : [];
     return {
       brand: brand ? { id: brand.id, name: brand.name } : null,
@@ -465,6 +473,25 @@ export class Workbench {
         candidates,
       };
     }
+    const topicReadiness = /^\/api\/topics\/([^/]+)\/readiness$/.exec(path);
+    if (topicReadiness) {
+      const brand = this.requireReady();
+      if (
+        body.writingAngle !== undefined &&
+        typeof body.writingAngle !== "string"
+      )
+        throw new HttpError(400, "写作角度必须是文本");
+      if (body.writingScope !== undefined && body.writingScope !== "general")
+        throw new HttpError(400, "写作范围无效");
+      const result = this.store.socialTopicReadiness(
+        brand,
+        decodeURIComponent(topicReadiness[1]),
+        body.writingAngle as string | undefined,
+        undefined,
+        body.writingScope as "general" | undefined,
+      );
+      return { ready: result.ready, missing: result.missing };
+    }
     const topic = /^\/api\/topics\/([^/]+)\/review$/.exec(path);
     if (topic) {
       const brand = this.requireReady();
@@ -482,6 +509,8 @@ export class Workbench {
       ) {
         if (body.purpose !== undefined && body.purpose !== "brand_original")
           throw new HttpError(400, "竞对素材用于 Tokenhot 原创帖");
+        if (body.writingScope !== undefined && body.writingScope !== "general")
+          throw new HttpError(400, "写作范围无效");
         if (
           body.writingAngle !== undefined &&
           typeof body.writingAngle !== "string"
@@ -491,6 +520,9 @@ export class Workbench {
           brand,
           decision: body.decision as "approve" | "reject",
           reason: body.reason as string,
+          ...(body.writingScope === "general"
+            ? { writingScope: "general" as const }
+            : {}),
           ...(typeof body.writingAngle === "string" && body.writingAngle.trim()
             ? { writingAngle: body.writingAngle }
             : {}),
@@ -526,7 +558,9 @@ export class Workbench {
       });
     }
     const socialCandidate =
-      /^\/api\/social-candidates\/([^/]+)\/(hold|retry)$/.exec(path);
+      /^\/api\/social-candidates\/([^/]+)\/(hold|retry|recover|repair)$/.exec(
+        path,
+      );
     if (socialCandidate) {
       const brand = this.requireReady();
       if (!validReason(body.reason)) throw new HttpError(400, "请填写处理原因");
@@ -540,6 +574,64 @@ export class Workbench {
           body.held,
           body.reason as string,
         );
+      } else if (socialCandidate[2] === "recover") {
+        const result = await this.store.retrySocialEvaluation(
+          { brand, candidateId: id, reason: body.reason as string },
+          { model: this.modelFactory() },
+        );
+        return {
+          accepted: true,
+          failures: result.failures,
+          unresolved: result.selection.candidateDecisions.some(
+            (item) => item.status === "needs_review",
+          ),
+        };
+      } else if (socialCandidate[2] === "repair") {
+        const repair = z
+          .object({
+            kind: z.enum(["creative", "announcement"]),
+            identity: z
+              .object({
+                entity: z.string().trim().min(1).max(300),
+                product: z.string().trim().min(1).max(300),
+                version: z.string().trim().min(1).max(100).nullable(),
+                eventType: z.enum([
+                  "release",
+                  "api_change",
+                  "pricing_change",
+                  "benchmark",
+                  "tutorial",
+                  "incident",
+                  "other",
+                ]),
+                eventDate: z
+                  .string()
+                  .regex(/^\d{4}-\d{2}-\d{2}$/)
+                  .nullable(),
+                primaryUrl: z.string().url().max(4096).nullable(),
+              })
+              .strict()
+              .optional(),
+            identityEvidence: z.string().trim().min(1).max(6000).optional(),
+          })
+          .parse({
+            kind: body.kind,
+            identity: body.identity,
+            identityEvidence: body.identityEvidence,
+          });
+        const result = await this.store.repairSocialCandidate({
+          brand,
+          candidateId: id,
+          reason: body.reason as string,
+          ...repair,
+        });
+        return {
+          accepted: true,
+          failures: result.failures,
+          unresolved: result.selection.candidateDecisions.some(
+            (item) => item.status === "needs_review",
+          ),
+        };
       } else
         this.store.retrySocialCandidate(brand.id, id, body.reason as string);
       return { accepted: true };

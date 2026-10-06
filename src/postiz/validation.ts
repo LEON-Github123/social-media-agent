@@ -42,6 +42,7 @@ export interface ContentInput {
   revision?: Revision;
   purpose?: ContentPurpose;
   writingAngle?: string;
+  writingScope?: "general";
   inspirationRequiresFacts?: boolean;
 }
 
@@ -58,6 +59,7 @@ export interface ValidatedJobInput {
   revision?: Revision;
   purpose?: ContentPurpose;
   writingAngle?: string;
+  writingScope?: "general";
   inspirationRequiresFacts?: boolean;
   /** Internal marker: sources contain the exact documents used by generation. */
   sourceEvidenceSnapshot?: true;
@@ -176,6 +178,7 @@ export const revisionSchema = z.discriminatedUnion("kind", [
 const purposeFields = {
   purpose: z.enum(["brand_original", "source_commentary"]).optional(),
   writingAngle: nonempty(2_000).optional(),
+  writingScope: z.literal("general").optional(),
   inspirationRequiresFacts: z.boolean().optional(),
 };
 

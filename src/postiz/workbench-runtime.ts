@@ -165,6 +165,7 @@ export async function runWorkbenchTick(
           const readiness = store.brandWritingReadiness(brand, input.sources, {
             purpose: "brand_original",
             writingAngle: input.writingAngle,
+            writingScope: input.writingScope,
             inspirationRequiresFacts: input.inspirationRequiresFacts ?? false,
           });
           if (!readiness.ready) {
@@ -214,6 +215,7 @@ export async function runWorkbenchTick(
               revision: input.revision,
               purpose: input.purpose,
               writingAngle: input.writingAngle,
+              writingScope: input.writingScope,
               inspirationRequiresFacts: input.inspirationRequiresFacts,
             },
             {

@@ -35,6 +35,7 @@ export interface JobInput {
   revision?: Revision;
   purpose?: ContentPurpose;
   writingAngle?: string;
+  writingScope?: "general";
   inspirationRequiresFacts?: boolean;
   sourceEvidenceSnapshot?: true;
 }
@@ -242,6 +243,7 @@ export async function submitNext(options: {
         sources: validateOutputSourcesForJob(input, output.sources),
         purpose: input.purpose,
         writingAngle: input.writingAngle,
+        writingScope: input.writingScope,
         inspirationRequiresFacts: input.inspirationRequiresFacts,
       });
       if (reasons.length)

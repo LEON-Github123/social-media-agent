@@ -74,12 +74,15 @@ const INTERNAL_LANGUAGE_RULE = `Write internal judgments and explanations in Sim
 function purposeContext(
   input: Pick<
     ContentInput,
-    "purpose" | "writingAngle" | "inspirationRequiresFacts"
+    "purpose" | "writingAngle" | "writingScope" | "inspirationRequiresFacts"
   >,
 ): string {
   const angle = input.writingAngle
     ? `Editorial angle (direction only, never factual evidence): ${JSON.stringify(input.writingAngle)}\n`
     : "";
+  if (input.writingScope === "general") {
+    return `Writing scope: general. The human explicitly chose a general educational or industry viewpoint, without introducing the publisher's own product, functionality, prices, compatibility, availability or performance. Brand facts are not required and do not authorize product claims in this scope. This scope overrides any product-focused angle, brand rules or examples. Do not mention the publisher's brand name or ID, or use first-person we/our/us ownership language. In every stage, reject first-party or own-product claims, including implicit transfer of competitor capabilities, prices, performance or results to the publisher without naming it. Borrow only the high-level idea; never imply that the publisher supplies the competitor's capabilities. ${input.purpose === "brand_original" ? "A public source URL is optional; use only supplied evidence URLs." : "Cite at least one supplied source URL."}\n${angle}`;
+  }
   if (input.purpose === "brand_original") {
     return `Purpose: brand_original. The supplied sources are competitor inspiration, not evidence for this brand's capabilities or wording to copy. Borrow only a high-level idea; write an original brand post grounded in the explicit verifiedFacts. Never rename a competitor or transfer its prices, features, performance, results or experience to this brand. If no verified fact supports a first-party claim, omit that claim or reject the draft. Inspiration requires facts: ${input.inspirationRequiresFacts === true}. An evergreen marketing or educational angle need not be technical news or a recent release. A public source link is optional; if any URL appears it must be one of this job's supplied source or verified-fact URLs.\n${angle}`;
   }
@@ -132,6 +135,10 @@ const SOURCE_REPORT_TASK = `Write a concise source-grounded research brief for O
 The brand is the publisher, not the required subject. Do not invent a product connection, advertising angle, first-hand test, or brand advantage. A general technical lesson from a brand-owned page is permitted; claims about that brand's own features or performance still require verifiedFacts.`;
 
 const ORIGINAL_REPORT_TASK = `Write a concise internal brief for ONE original brand post. Identify the high-level idea learned from competitor inspiration, then separate it from this brand's own supported angle. For each proposed brand claim, cite the exact verifiedFacts claim and its URL. Competitor source text is not brand evidence; do not reuse its wording, brand name, capability, performance or results. If the writing angle cannot be supported without an invented claim, return a Chinese <skip> reason.`;
+
+const GENERAL_RELEVANCE_TASK = `Determine whether the inspiration supports ONE useful, concrete general educational or industry viewpoint for this audience. Brand facts are not required. Reject angles that require first-party product claims or implicitly transfer competitor capabilities to the publisher.`;
+
+const GENERAL_REPORT_TASK = `Write a concise internal brief for ONE general educational or industry viewpoint supported by the supplied sources. Separate a reusable high-level lesson from competitor-specific capabilities and results. Do not propose publisher or own-product claims, even when verifiedFacts exist. If the angle requires such claims, return a Chinese <skip> reason.`;
 
 /** Full JSON only (or a single JSON code fence); no substring salvage/coercion. */
 export function parseModelJson<T>(text: string, schema: z.ZodType<T>): T {
@@ -310,7 +317,18 @@ export function validatePost(
   ) {
     reasons.push("输出包含串帖分段，而非单条 X 帖子");
   }
-  if (!(input.brand.verifiedFacts ?? []).length) {
+  if (input.writingScope === "general") {
+    const brandNames = [input.brand.name, input.brand.id]
+      .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    const ownReference = new RegExp(
+      `(?:^|[^a-zA-Z0-9_])(?:${brandNames}|we|our|us)(?=$|[^a-zA-Z0-9_])|我们|咱们|本(?:公司|品牌|平台|产品|服务)|自有(?:产品|功能|服务)`,
+      "i",
+    );
+    if (ownReference.test(publicText)) {
+      reasons.push("通用观点范围不能包含品牌提及或第一方自有产品主张");
+    }
+  } else if (!(input.brand.verifiedFacts ?? []).length) {
     const name = input.brand.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const ownClaim = new RegExp(
       `(?:\\b${name}\\b|\\bwe\\b|\\bour\\s+(?:API|models?|platform|service)\\b)[^.!?\\n]{0,70}\\b(?:offers?|supports?|provides?|costs?|charges?|delivers?|achieves?|guarantees?|runs?|accepts?|enables?|saves?|reduces?|is|are|has|have)\\b`,
@@ -353,6 +371,7 @@ const ContentState = Annotation.Root({
   revision: Annotation<Revision | undefined>(),
   purpose: Annotation<ContentPurpose | undefined>(),
   writingAngle: Annotation<string | undefined>(),
+  writingScope: Annotation<"general" | undefined>(),
   inspirationRequiresFacts: Annotation<boolean | undefined>(),
   relevant: Annotation<boolean>({
     reducer: (_, value) => value,
@@ -391,6 +410,7 @@ export function createContentGraph(dependencies: ContentDependencies) {
       const timing = sourceTiming(state.sources, now);
       if (
         state.purpose === "brand_original" &&
+        state.writingScope !== "general" &&
         state.inspirationRequiresFacts &&
         !(state.brand.verifiedFacts ?? []).length
       ) {
@@ -415,7 +435,7 @@ export function createContentGraph(dependencies: ContentDependencies) {
       const decision = parseModelJson(
         await model.invoke({
           task: "relevance",
-          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\n${state.purpose === "brand_original" ? ORIGINAL_RELEVANCE_TASK : SOURCE_RELEVANCE_TASK}\nBrand context:\n${brandContext(state.brand)}\nReturn only JSON: {"relevant": boolean, "reasoning": "简体中文理由"}. The reasoning value must be in Simplified Chinese.`,
+          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\n${state.writingScope === "general" ? GENERAL_RELEVANCE_TASK : state.purpose === "brand_original" ? ORIGINAL_RELEVANCE_TASK : SOURCE_RELEVANCE_TASK}\nBrand context:\n${brandContext(state.brand)}\nReturn only JSON: {"relevant": boolean, "reasoning": "简体中文理由"}. The reasoning value must be in Simplified Chinese.`,
           user: sourcePayload(state.sources),
         }),
         relevanceSchema,
@@ -431,7 +451,7 @@ export function createContentGraph(dependencies: ContentDependencies) {
       const response = parseWritingResponse(
         await model.invoke({
           task: "report",
-          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\n${state.purpose === "brand_original" ? ORIGINAL_REPORT_TASK : SOURCE_REPORT_TASK} Write this internal brief in Simplified Chinese; the public post will separately follow ${state.brand.language}.\nBrand context:\n${brandContext(state.brand)}\nReturn only the concise brief inside <report>...</report>. If the evidence cannot sustain one worthwhile post, return <skip>简体中文具体理由</skip> instead. Do not output reasoning notes, an analysis transcript, or text outside the one required tag.`,
+          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\n${state.writingScope === "general" ? GENERAL_REPORT_TASK : state.purpose === "brand_original" ? ORIGINAL_REPORT_TASK : SOURCE_REPORT_TASK} Write this internal brief in Simplified Chinese; the public post will separately follow ${state.brand.language}.\nBrand context:\n${brandContext(state.brand)}\nReturn only the concise brief inside <report>...</report>. If the evidence cannot sustain one worthwhile post, return <skip>简体中文具体理由</skip> instead. Do not output reasoning notes, an analysis transcript, or text outside the one required tag.`,
           user: JSON.stringify({
             ...JSON.parse(sourcePayload(state.sources)),
             ...(state.revision?.kind === "rewrite"
@@ -457,7 +477,7 @@ export function createContentGraph(dependencies: ContentDependencies) {
       const response = parseWritingResponse(
         await model.invoke({
           task: "post",
-          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\nWrite exactly one natural, concise X post in ${state.brand.language}, in the voice of a developer explaining something useful to another developer. When the language is English, use idiomatic everyday English with direct verbs; avoid translated slogans or marketing prose. ONE post must make ONE concrete point or give ONE practical step, ${state.purpose === "brand_original" ? "grounded in this brand's verifiedFacts when stating product capabilities. The competitor source supplies inspiration only; do not copy its wording, rename the competitor, or transfer its claims." : "supported by a specific detail and a natural source link."} Do not compress a roundup, several unrelated claims, or a thread into it.\nLead with the useful point. Do not add an obligatory hook, "game changer", generic AI hype, a question-and-answer gimmick, forced brand mention, sales pitch, slogan, emoji or hashtag. The account name is not a required keyword. Do not append a Tokenhot or other brand CTA to an industry tip.\nBrand context:\n${brandContext(state.brand)}\nBrand writing rules:\n${state.brand.contentRules.map((rule) => `- ${rule}`).join("\n")}\nStyle examples are tone references only; their brands, claims, numbers, URLs and dates are not evidence:\n${JSON.stringify(state.brand.examples)}\nStay within ${state.brand.maxPostLength ?? 280} X weighted characters: URLs count as 23; CJK characters and emoji generally count as 2. Aim comfortably below the limit: roughly 180–220 weighted characters when the maximum is 280, or shorter if the configured maximum is lower. Choose ONE step and remove secondary details. ${state.purpose === "brand_original" ? "A public URL is optional; if included, use only a supplied source or verified-fact URL, copied exactly. Do not add a competitor source link by default." : "Include exactly one supplied source URL at the end."} Do not print API endpoints, base URLs, or other links mentioned inside a document unless they are themselves supplied source URLs; describe the setting in words instead.\nReturn only one finished public post in ${state.brand.language} inside <post>...</post>. If no useful, fully supported post can fit, return <skip>简体中文具体理由</skip>. Do not produce notes, explanations, thread segments or text outside the one required tag.`,
+          system: `${EVIDENCE_RULES}\n${INTERNAL_LANGUAGE_RULE}\n${purposeContext(state)}\n${timeContext(state.sources, now)}\nWrite exactly one natural, concise X post in ${state.brand.language}, in the voice of a developer explaining something useful to another developer. When the language is English, use idiomatic everyday English with direct verbs; avoid translated slogans or marketing prose. ONE post must make ONE concrete point or give ONE practical step, ${state.writingScope === "general" ? "presented as a general viewpoint without any publisher or own-product claims. Competitor capabilities must not become the publisher's implicit capabilities." : state.purpose === "brand_original" ? "grounded in this brand's verifiedFacts when stating product capabilities. The competitor source supplies inspiration only; do not copy its wording, rename the competitor, or transfer its claims." : "supported by a specific detail and a natural source link."} Do not compress a roundup, several unrelated claims, or a thread into it.\nLead with the useful point. Do not add an obligatory hook, "game changer", generic AI hype, a question-and-answer gimmick, forced brand mention, sales pitch, slogan, emoji or hashtag. The account name is not a required keyword. Do not append a Tokenhot or other brand CTA to an industry tip.\nBrand context:\n${brandContext(state.brand)}\nBrand writing rules:\n${state.brand.contentRules.map((rule) => `- ${rule}`).join("\n")}\nStyle examples are tone references only; their brands, claims, numbers, URLs and dates are not evidence:\n${JSON.stringify(state.brand.examples)}\nStay within ${state.brand.maxPostLength ?? 280} X weighted characters: URLs count as 23; CJK characters and emoji generally count as 2. Aim comfortably below the limit: roughly 180–220 weighted characters when the maximum is 280, or shorter if the configured maximum is lower. Choose ONE step and remove secondary details. ${state.purpose === "brand_original" ? "A public URL is optional; if included, use only a supplied source or verified-fact URL, copied exactly. Do not add a competitor source link by default." : "Include exactly one supplied source URL at the end."} Do not print API endpoints, base URLs, or other links mentioned inside a document unless they are themselves supplied source URLs; describe the setting in words instead.\nReturn only one finished public post in ${state.brand.language} inside <post>...</post>. If no useful, fully supported post can fit, return <skip>简体中文具体理由</skip>. Do not produce notes, explanations, thread segments or text outside the one required tag.`,
           user: JSON.stringify({
             report: state.report,
             sources: state.sources,

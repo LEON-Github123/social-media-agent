@@ -725,6 +725,22 @@ export class ContentJobStore extends BrandKnowledgeStore {
   ) {
     if (!intent) return { ready: true, missing: [] as string[] };
     const angle = intent.writingAngle ?? "";
+    if (intent.writingScope === "general") {
+      const lower = angle.toLowerCase();
+      const mentionsBrand = [brand.id, brand.name].some((name) =>
+        lower.includes(name.toLowerCase()),
+      );
+      return !angle.trim() ||
+        mentionsBrand ||
+        /\b(we|our|ours|us)\b|我们|咱们|本产品|本服务|本平台|自有/i.test(angle)
+        ? {
+            ready: false,
+            missing: [
+              "通用观点须填写独立角度，且不能介绍自有产品；涉及品牌功能、价格或性能时请选择品牌资料写作",
+            ],
+          }
+        : { ready: true, missing: [] as string[] };
+    }
     const claimsBrand =
       /Tokenhot|我们|我的|本产品|本服务|本平台|自有|our\b/i.test(angle);
     const requiresFacts = intent.inspirationRequiresFacts || claimsBrand;
@@ -819,7 +835,17 @@ export class ContentJobStore extends BrandKnowledgeStore {
     topicId: string,
     writingAngle?: string,
     socialStates?: SocialCandidateState[],
+    writingScope?: "general",
   ) {
+    if (
+      writingAngle !== undefined &&
+      (!writingAngle.trim() || writingAngle.length > 2000)
+    )
+      throw new TypeError("写作角度须为 1–2000 字符");
+    if (writingScope !== undefined && writingScope !== "general")
+      throw new TypeError("写作范围无效");
+    if (writingScope === "general" && !writingAngle?.trim())
+      throw new TypeError("请为通用观点填写独立写作角度");
     const topic = this.getTopic(topicId);
     if (!topic || topic.brandId !== brand.id)
       throw new JobConflictError("选题不存在");
@@ -831,9 +857,10 @@ export class ContentJobStore extends BrandKnowledgeStore {
       writingAngle:
         writingAngle?.trim() ||
         states.find((state) => state.assessment)?.assessment?.angle,
-      inspirationRequiresFacts: states.some(
-        (state) => state.assessment?.requiresBrandFacts,
-      ),
+      ...(writingScope ? { writingScope } : {}),
+      inspirationRequiresFacts:
+        writingScope !== "general" &&
+        states.some((state) => state.assessment?.requiresBrandFacts),
     };
     const sources =
       topic.approvedSources ??
@@ -857,6 +884,7 @@ export class ContentJobStore extends BrandKnowledgeStore {
       decision: "approve" | "reject";
       reason: string;
       writingAngle?: string;
+      writingScope?: "general";
       mergeWith?: string;
     },
   ) {
@@ -873,6 +901,8 @@ export class ContentJobStore extends BrandKnowledgeStore {
         options.brand,
         id,
         options.writingAngle,
+        undefined,
+        options.writingScope,
       );
       if (options.decision === "approve" && !readiness.ready)
         throw new JobConflictError(
@@ -960,6 +990,7 @@ export class ContentJobStore extends BrandKnowledgeStore {
         oldInput.integrationId !== next.integrationId ||
         oldInput.purpose !== next.purpose ||
         oldInput.writingAngle !== next.writingAngle ||
+        oldInput.writingScope !== next.writingScope ||
         oldInput.inspirationRequiresFacts !== next.inspirationRequiresFacts ||
         JSON.stringify(oldInput.mediaPaths) !==
           JSON.stringify(next.mediaPaths) ||

@@ -315,9 +315,16 @@
     note("正在处理，请稍候…");
     let succeeded = false;
     try {
-      await request(path, "POST", payload);
+      const result = await request(path, "POST", payload);
       succeeded = true;
-      note(success, "success");
+      if (array(result?.failures).length)
+        note(
+          `处理仍有异常：${[...new Set(result.failures.map((failure) => failure.message))].join("；")}`,
+          "error",
+        );
+      else if (result?.unresolved)
+        note("评估已保存，事件信息仍需人工核对；尚未批准写作。", "info");
+      else note(success, "success");
       if (options.reset) options.reset();
     } catch (error) {
       note(error.message, "error");
@@ -882,62 +889,93 @@
           );
         if (
           ["recommended", "watch"].includes(selected.tier) &&
-          topic.brandReadiness?.ready === true &&
           (!conflicts.length || mergeOptions.length)
-        )
-          actions.append(
-            actionForm(
-              selected.tier === "watch" ? "人工选择并批准写作" : "批准写作",
-              [
-                field(
-                  "writingAngle",
-                  "写作角度（可选）",
-                  false,
-                  assessment?.angle || "",
-                ),
-                ...(mergeOptions.length
-                  ? [
-                      selectField("mergeWith", "合并到已有内容", [
-                        { value: "", label: "请选择合并目标" },
-                        ...mergeOptions,
-                      ]),
-                    ]
-                  : []),
-              ],
-              async (values) => {
-                if (conflicts.length && !values.mergeWith) {
-                  note("该选题与已有内容冲突，请选择合并目标。", "error");
-                  return;
-                }
-                mutateSocial(
-                  endpoint,
-                  {
-                    decision: "approve",
-                    reason: "人工批准竞品选题写作",
-                    purpose: "brand_original",
-                    ...(values.writingAngle
-                      ? { writingAngle: values.writingAngle }
-                      : {}),
-                    ...(values.mergeWith
-                      ? { mergeWith: values.mergeWith }
-                      : {}),
-                  },
-                  "已批准写作，任务将进入 Postiz 草稿流程。",
-                );
-              },
-            ),
+        ) {
+          const approval = actionForm(
+            selected.tier === "watch" ? "人工选择并批准写作" : "批准写作",
+            [
+              selectField("writingScope", "写作范围", [
+                { value: "", label: "按已确认品牌资料写作" },
+                { value: "general", label: "通用观点（不介绍自有产品）" },
+              ]),
+              field(
+                "writingAngle",
+                "写作角度（可选）",
+                false,
+                assessment?.angle || "",
+              ),
+              ...(mergeOptions.length
+                ? [
+                    selectField("mergeWith", "合并到已有内容", [
+                      { value: "", label: "请选择合并目标" },
+                      ...mergeOptions,
+                    ]),
+                  ]
+                : []),
+            ],
+            async (values) => {
+              if (conflicts.length && !values.mergeWith) {
+                note("该选题与已有内容冲突，请选择合并目标。", "error");
+                return;
+              }
+              mutateSocial(
+                endpoint,
+                {
+                  decision: "approve",
+                  reason: "人工批准竞品选题写作",
+                  purpose: "brand_original",
+                  ...(values.writingScope === "general"
+                    ? { writingScope: "general" }
+                    : {}),
+                  ...(values.writingAngle
+                    ? { writingAngle: values.writingAngle }
+                    : {}),
+                  ...(values.mergeWith ? { mergeWith: values.mergeWith } : {}),
+                },
+                "已批准写作，任务将进入 Postiz 草稿流程。",
+              );
+            },
           );
-        else if (
-          ["recommended", "watch"].includes(selected.tier) &&
-          topic.brandReadiness?.ready !== true
-        )
-          row.append(
-            node(
-              "p",
-              "inline-warning",
-              "品牌资料状态尚未核验，暂不能批准写作。",
-            ),
+          const form = approval.querySelector("form");
+          const result = node(
+            "p",
+            "item-meta",
+            "修改角度后可先检查资料；只有你点击批准才会进入写作。",
           );
+          result.setAttribute("role", "status");
+          const check = node("button", "button secondary", "检查所需资料");
+          check.type = "button";
+          check.addEventListener("click", async () => {
+            if (state.busy || !state.snapshotHealthy) return;
+            const writingAngle = form.elements
+              .namedItem("writingAngle")
+              .value.trim();
+            const writingScope = form.elements.namedItem("writingScope").value;
+            setBusy(true);
+            try {
+              const checked = await request(
+                `/api/topics/${encodeURIComponent(topic.id)}/readiness`,
+                "POST",
+                {
+                  ...(writingAngle ? { writingAngle } : {}),
+                  ...(writingScope === "general" ? { writingScope } : {}),
+                },
+              );
+              result.textContent = checked.ready
+                ? "资料检查通过，可以批准写作。"
+                : `待补充：${array(checked.missing).join("；")}`;
+            } catch (error) {
+              result.textContent = error.message;
+            } finally {
+              setBusy(false);
+            }
+          });
+          form.addEventListener("input", () => {
+            result.textContent = "角度已修改，请重新检查资料。";
+          });
+          form.append(check, result);
+          actions.append(approval);
+        }
         actions.append(
           actionForm(
             "跳过此选题",
@@ -952,7 +990,19 @@
         );
         row.append(actions);
       }
-      if (selected && state.socialTab !== "history") {
+      if (selected?.recovery?.inFlight && state.socialTab !== "history")
+        row.append(
+          node(
+            "p",
+            "item-meta",
+            `正在恢复，请稍候。若处理中断，可在 ${time(selected.recovery.leaseUntil)} 后重新核对。`,
+          ),
+        );
+      if (
+        selected &&
+        !selected.recovery?.inFlight &&
+        state.socialTab !== "history"
+      ) {
         const actions = node("div", "topic-actions");
         if (!selected.held)
           actions.append(
@@ -967,8 +1017,28 @@
                 ),
             ),
           );
-        else actions.append(node("span", "pill warn", "已暂存"));
-        if (selected.tier === "error" && selected.attempts < 2)
+        else {
+          actions.append(node("span", "pill warn", "已暂存"));
+          actions.append(
+            actionForm(
+              "继续处理",
+              [field("reason", "继续处理原因", true)],
+              async (values) =>
+                mutateSocial(
+                  `/api/social-candidates/${encodeURIComponent(selected.candidateId)}/hold`,
+                  { held: false, reason: values.reason },
+                  "已恢复处理；仍按原有审核与额度规则执行。",
+                ),
+            ),
+          );
+        }
+        if (
+          selected.tier === "error" &&
+          selected.attempts < 2 &&
+          !topic &&
+          !assessment &&
+          !selected.held
+        )
           actions.append(
             actionForm(
               "重试评估",
@@ -989,6 +1059,101 @@
               "已到自动重试上限，请人工核查来源或配置。",
             ),
           );
+        const recoverable =
+          ["recommended", "watch", "error"].includes(selected.tier) &&
+          (!topic || topic.status === "needs_review") &&
+          (!selected.held ||
+            (selected.recovery?.leaseUntil &&
+              selected.recovery.leaseUntil <= Date.now()));
+        if (recoverable && selected.recovery) {
+          const base = `/api/social-candidates/${encodeURIComponent(selected.candidateId)}`;
+          if (selected.recovery.manualAttempts < selected.recovery.limit)
+            actions.append(
+              actionForm(
+                "人工重试评估",
+                [field("reason", "已核查的问题或重试原因", true)],
+                async (values) =>
+                  mutateSocial(
+                    `${base}/recover`,
+                    { reason: values.reason },
+                    "评估已完成，请查看结果；尚未批准写作。",
+                  ),
+              ),
+            );
+          else
+            actions.append(
+              node(
+                "p",
+                "inline-warning",
+                "额外人工重试已用完；有有效评估时可在下方核对归组。",
+              ),
+            );
+          actions.append(
+            node(
+              "p",
+              "item-meta",
+              `人工重试 ${selected.recovery.manualAttempts}/${selected.recovery.limit}，仍计入每日筛选额度；同组素材会一起核对。`,
+            ),
+          );
+          if (assessment && !assessment.excludedReason) {
+            actions.append(
+              actionForm(
+                "作为表达素材重新归组",
+                [field("reason", "为何应借鉴表达而非引用公告", true)],
+                async (values) =>
+                  mutateSocial(
+                    `${base}/repair`,
+                    { kind: "creative", reason: values.reason },
+                    "已恢复为表达素材，请检查角度后另行批准写作。",
+                  ),
+              ),
+            );
+            actions.append(
+              actionForm(
+                "核对公告信息并重新归组",
+                [
+                  field("entity", "发布方", true),
+                  field("product", "产品或模型", true),
+                  field("version", "版本（来源未提供则留空）", false),
+                  selectField(
+                    "eventType",
+                    "公告类型",
+                    Object.entries(eventTypeNames).map(([value, label]) => ({
+                      value,
+                      label,
+                    })),
+                  ),
+                  field("eventDate", "公告日期（YYYY-MM-DD，未知留空）", false),
+                  field("primaryUrl", "一手公告链接（未知留空）", false),
+                  textareaField(
+                    "identityEvidence",
+                    "支持以上信息的来源原文",
+                    true,
+                  ),
+                  field("reason", "人工核对说明", true),
+                ],
+                async (values) =>
+                  mutateSocial(
+                    `${base}/repair`,
+                    {
+                      kind: "announcement",
+                      reason: values.reason,
+                      identityEvidence: values.identityEvidence,
+                      identity: {
+                        entity: values.entity,
+                        product: values.product,
+                        version: values.version || null,
+                        eventType: values.eventType,
+                        eventDate: values.eventDate || null,
+                        primaryUrl: values.primaryUrl || null,
+                      },
+                    },
+                    "公告归组已保存，请核对结果后另行批准写作。",
+                  ),
+              ),
+            );
+          }
+        }
         row.append(actions);
       }
       if (!selected && topic) {

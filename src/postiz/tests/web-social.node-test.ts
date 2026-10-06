@@ -155,6 +155,12 @@ void test("competitor review uses backend tiers, protects approval and preserves
           tier: "error",
           held: false,
           attempts: 2,
+          recovery: {
+            manualAttempts: 0,
+            limit: 2,
+            inFlight: false,
+            leaseUntil: null,
+          },
           errorMessage:
             "Selection model failed or returned an invalid decision set; no candidates were auto-selected",
           social: null,
@@ -177,8 +183,17 @@ void test("competitor review uses backend tiers, protects approval and preserves
         return route.fulfill({ body: styles, contentType: "text/css" });
       if (url.pathname === "/api/snapshot")
         return route.fulfill({ json: snapshot });
+      if (url.pathname === "/api/topics/t1/readiness") {
+        assert.deepEqual(request.postDataJSON(), {
+          writingAngle: "通用输入格式教程",
+          writingScope: "general",
+        });
+        return route.fulfill({ json: { ready: true, missing: [] } });
+      }
       if (request.method() === "POST") {
         posts.push({ path: url.pathname, body: request.postDataJSON() });
+        if (url.pathname === "/api/social-candidates/c2/hold")
+          snapshot.socialCandidates[1].held = request.postDataJSON().held;
         return route.fulfill({ json: {} });
       }
       return route.abort();
@@ -190,7 +205,17 @@ void test("competitor review uses backend tiers, protects approval and preserves
       await page
         .locator("#topics-list summary", { hasText: "批准写作" })
         .count(),
+      1,
+    );
+    await page.locator("#topics-list summary", { hasText: "批准写作" }).click();
+    await page.getByLabel("写作范围").selectOption("general");
+    await page.getByLabel("写作角度（可选）").fill("通用输入格式教程");
+    await page.getByRole("button", { name: "检查所需资料" }).click();
+    await page.getByText("资料检查通过，可以批准写作。").waitFor();
+    assert.equal(
+      posts.length,
       0,
+      "checking readiness does not approve or write",
     );
     assert.equal((await page.getByText("未提供").count()) > 0, true);
     assert.equal(await page.getByText(/传播高不等于产品声明已核实/).count(), 1);
@@ -235,15 +260,39 @@ void test("competitor review uses backend tiers, protects approval and preserves
       path: "/api/social-candidates/c2/hold",
       body: { held: true, reason: "等更多数据" },
     });
+    await page.locator("#topics-list summary", { hasText: "继续处理" }).click();
+    await page.getByLabel("继续处理原因").fill("已有新的观察结论");
+    await page.locator("#topics-list button", { hasText: "继续处理" }).click();
+    await page.waitForFunction(
+      () => !document.querySelector("#topics-list details[open]"),
+    );
+    assert.deepEqual(posts[2], {
+      path: "/api/social-candidates/c2/hold",
+      body: { held: false, reason: "已有新的观察结论" },
+    });
     await page.getByRole("tab", { name: /处理异常/ }).click();
     await page.getByRole("heading", { name: "待核对异常" }).waitFor();
     assert.equal(
       await page
-        .locator("#topics-list summary", { hasText: "重试评估" })
+        .locator("#topics-list summary", { hasText: /^重试评估$/ })
         .count(),
       0,
     );
     assert.equal(await page.getByText(/已到自动重试上限/).count(), 1);
+    await page
+      .locator("#topics-list summary", { hasText: "人工重试评估" })
+      .click();
+    await page.getByLabel("已核查的问题或重试原因").fill("模型连接已修复");
+    await page
+      .locator("#topics-list button", { hasText: "人工重试评估" })
+      .click();
+    await page.waitForFunction(
+      () => !document.querySelector("#topics-list details[open]"),
+    );
+    assert.deepEqual(posts[3], {
+      path: "/api/social-candidates/c3/recover",
+      body: { reason: "模型连接已修复" },
+    });
     assert.equal(
       await page.getByText(/历史评估失败，原始原因未记录/).count(),
       1,
@@ -285,7 +334,7 @@ void test("competitor review uses backend tiers, protects approval and preserves
     );
     await page.locator("#topics-list button", { hasText: "批准写作" }).click();
     await page.waitForTimeout(50);
-    assert.deepEqual(posts[2], {
+    assert.deepEqual(posts[4], {
       path: "/api/topics/t1/review",
       body: {
         decision: "approve",
@@ -293,6 +342,30 @@ void test("competitor review uses backend tiers, protects approval and preserves
         purpose: "brand_original",
         writingAngle: "聚焦实践",
       },
+    });
+    snapshot.topics = snapshot.topics.filter((topic) => topic.id !== "t1");
+    snapshot.socialCandidates[0].recovery = {
+      manualAttempts: 0,
+      limit: 2,
+      inFlight: false,
+      leaseUntil: null,
+    };
+    await page.getByRole("button", { name: "刷新" }).click();
+    await page
+      .locator("#topics-list summary", { hasText: "作为表达素材重新归组" })
+      .click();
+    await page
+      .getByLabel("为何应借鉴表达而非引用公告")
+      .fill("只参考演示方法，不引用公告事实");
+    await page
+      .locator("#topics-list button", { hasText: "作为表达素材重新归组" })
+      .click();
+    await page.waitForFunction(
+      () => !document.querySelector("#topics-list details[open]"),
+    );
+    assert.deepEqual(posts[5], {
+      path: "/api/social-candidates/c1/repair",
+      body: { kind: "creative", reason: "只参考演示方法，不引用公告事实" },
     });
     snapshot.competitorMode = false;
     await page.getByRole("button", { name: "刷新" }).click();
