@@ -198,17 +198,19 @@ void test("competitor review uses backend tiers, protects approval and preserves
       }
       return route.abort();
     });
-    await page.goto("https://test.local/");
+    await page.goto("https://test.local/#topics");
     await page.getByRole("heading", { name: "中文推荐标题" }).waitFor();
     assert.equal(await page.getByText("待补品牌资料：产品定位").count(), 1);
     assert.equal(
       await page
-        .locator("#topics-list summary", { hasText: "批准写作" })
+        .locator("#topics-list summary", { hasText: "设置写作与审批" })
         .count(),
       1,
     );
-    await page.locator("#topics-list summary", { hasText: "批准写作" }).click();
-    await page.getByLabel("写作范围").selectOption("general");
+    await page
+      .locator("#topics-list summary", { hasText: "设置写作与审批" })
+      .click();
+    await page.getByLabel("写作方向").selectOption("general");
     await page.getByLabel("写作角度（可选）").fill("通用输入格式教程");
     await page.getByRole("button", { name: "检查所需资料" }).click();
     await page.getByText("资料检查通过，可以批准写作。").waitFor();
@@ -218,18 +220,19 @@ void test("competitor review uses backend tiers, protects approval and preserves
       "checking readiness does not approve or write",
     );
     assert.equal((await page.getByText("未提供").count()) > 0, true);
+    await page.locator("details.review-evidence > summary").click();
     assert.equal(await page.getByText(/传播高不等于产品声明已核实/).count(), 1);
     assert.equal(await page.getByText(/同账号基线样本不足/).count(), 1);
     await page.getByRole("tab", { name: /待观察/ }).click();
     await page.getByRole("heading", { name: "观察标题" }).waitFor();
     assert.equal(
       await page
-        .locator("#topics-list summary", { hasText: "人工选择并批准写作" })
+        .locator("#topics-list summary", { hasText: "选择写作方向" })
         .count(),
       1,
     );
     await page
-      .locator("#topics-list summary", { hasText: "人工选择并批准写作" })
+      .locator("#topics-list summary", { hasText: "选择写作方向" })
       .click();
     await Promise.all([
       page.waitForResponse(
@@ -237,9 +240,7 @@ void test("competitor review uses backend tiers, protects approval and preserves
           response.url().endsWith("/api/topics/t2/review") &&
           response.request().method() === "POST",
       ),
-      page
-        .locator("#topics-list button", { hasText: "人工选择并批准写作" })
-        .click(),
+      page.getByRole("button", { name: "批准写作", exact: true }).click(),
     ]);
     assert.deepEqual(posts[0], {
       path: "/api/topics/t2/review",
@@ -307,7 +308,7 @@ void test("competitor review uses backend tiers, protects approval and preserves
       .filter({ hasText: "手动历史" });
     assert.equal(await rssCard.count(), 1);
     assert.equal(
-      await rssCard.locator("summary").count(),
+      await rssCard.locator("form").count(),
       0,
       await rssCard.innerHTML(),
     );
@@ -323,9 +324,11 @@ void test("competitor review uses backend tiers, protects approval and preserves
     );
     brandReadiness.ready = true;
     brandReadiness.missing = [];
-    await page.getByRole("tab", { name: /今日推荐/ }).click();
+    await page.getByRole("tab", { name: /推荐待办/ }).click();
     await page.getByRole("button", { name: "刷新" }).click();
-    await page.locator("#topics-list summary", { hasText: "批准写作" }).click();
+    await page
+      .locator("#topics-list summary", { hasText: "设置写作与审批" })
+      .click();
     await page.getByLabel("写作角度（可选）").fill("聚焦实践");
     await page.getByRole("button", { name: "刷新" }).click();
     assert.equal(
@@ -369,13 +372,14 @@ void test("competitor review uses backend tiers, protects approval and preserves
     });
     snapshot.competitorMode = false;
     await page.getByRole("button", { name: "刷新" }).click();
-    await page
-      .getByRole("heading", { name: "素材审批", exact: true })
-      .waitFor();
+    await page.locator("#social-review-controls").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#topics-title").textContent(), "挑选素材");
     assert.equal(
       await page.locator("#social-review-controls").isHidden(),
       true,
     );
+    await page.locator('.side-nav a[href="#candidates"]').click();
+    await page.locator("#candidates").waitFor({ state: "visible" });
     assert.equal(await page.locator("#candidates").isHidden(), false);
     assert.equal(
       await page.getByRole("heading", { name: "中文推荐标题" }).count(),

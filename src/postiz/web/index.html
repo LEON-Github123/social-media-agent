@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light" />
     <title>Tokenhot · 内容工作台</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
@@ -13,17 +13,22 @@
       <aside class="sidebar" aria-label="主导航">
         <a class="brand" href="#overview" aria-label="Tokenhot 内容工作台首页"
           ><span class="brand-mark" aria-hidden="true">T</span
-          ><span>Tokenhot<small>CONTENT WORKBENCH</small></span></a
+          ><span>Tokenhot<small>内容工作台</small></span></a
         >
         <nav class="side-nav" aria-label="工作台分区">
-          <a href="#overview">总览</a><a href="#materials">素材</a
-          ><a href="#candidates">候选</a><a href="#topics">素材审批</a
-          ><a href="#jobs">内容任务</a><a href="#brand-facts">品牌事实</a
-          ><a href="#sources">来源检查</a>
+          <span class="nav-group-label">日常工作</span>
+          <a href="#overview">今日工作</a>
+          <a href="#topics">挑选素材</a>
+          <a href="#jobs">内容进度</a>
+          <span class="nav-group-label">管理与设置</span>
+          <a href="#materials">手动添加</a>
+          <a href="#candidates">采集记录</a>
+          <a href="#brand-facts">品牌资料</a>
+          <a href="#sources">来源与运行</a>
         </nav>
         <div class="side-note">
-          <span class="eyebrow">工作边界</span>
-          <p>在这里收集与审核。内容到达 Postiz 后，由你完成最终审阅与排期。</p>
+          <span class="eyebrow">最后一步，在 Postiz</span>
+          <p>挑选素材，批准写作。草稿生成后，前往 Postiz 编辑与排期。</p>
           <a
             id="sidebar-postiz"
             href="#"
@@ -38,10 +43,10 @@
       <main id="main">
         <header class="topbar">
           <div>
-            <span class="eyebrow">TOKENHOT / OPERATIONS</span>
-            <h1>内容工作台</h1>
-            <p class="subhead">
-              每天查看自动采集的素材，批准后生成内容并送到 Postiz 草稿。
+            <span class="eyebrow">YOUR CONTENT, THOUGHTFULLY.</span>
+            <h1 id="page-title">今日工作</h1>
+            <p class="subhead" id="page-description">
+              从值得关注的帖子，到值得发布的内容。
             </p>
           </div>
           <div class="top-actions">
@@ -102,83 +107,78 @@
         <div id="app-view" hidden>
           <section
             id="overview"
-            class="section overview"
+            class="section overview workspace-page"
             aria-labelledby="overview-title"
           >
             <div class="section-heading">
               <div>
-                <span class="eyebrow">TODAY'S PULSE</span>
-                <h2 id="overview-title">今天的工作节奏</h2>
+                <span class="eyebrow">DAILY BRIEF</span>
+                <h2 id="overview-title">今天，一目了然</h2>
               </div>
               <span id="snapshot-time" class="muted"></span>
             </div>
-            <div class="metric-grid">
-              <article class="metric-card accent">
-                <span class="metric-label">今日剩余额度</span
-                ><strong id="quota-value">—</strong
-                ><span id="quota-meta" class="metric-detail"
-                  >北京时间 · 每日上限 3 次</span
-                ><progress
-                  id="quota-fill"
-                  class="quota-track"
-                  max="3"
-                  value="0"
-                  aria-label="今日已用生成额度"
-                ></progress>
-              </article>
-              <article class="metric-card">
-                <span class="metric-label">流程状态</span
-                ><strong id="runtime-value">—</strong
-                ><span id="runtime-meta" class="metric-detail">等待状态</span>
-              </article>
-              <article class="metric-card">
-                <span class="metric-label">运行准备</span
-                ><strong id="readiness-value">—</strong
-                ><span id="readiness-meta" class="metric-detail">正在检查</span>
-              </article>
-              <article class="metric-card">
-                <span class="metric-label">待你审批</span
-                ><strong id="attention-value">—</strong
-                ><span id="attention-meta" class="metric-detail"
-                  >选题与任务</span
-                >
-                <a id="review-link" class="metric-link" href="#topics"
-                  >去审核选题 →</a
-                >
-              </article>
-            </div>
-            <div class="overview-bottom">
-              <div class="card status-card">
-                <div class="card-heading">
-                  <h3>开始一次处理</h3>
-                  <span id="brand-name" class="pill">品牌未配置</span>
-                </div>
-                <p>
-                  收集官方来源并筛选选题。你批准后才使用今日额度写作， 内容送到
-                  Postiz 草稿后由你审阅和排期。
+            <div class="daily-brief">
+              <div class="daily-heading">
+                <span class="eyebrow">下一步</span>
+                <h2 id="daily-title">今天，从挑选一条好素材开始。</h2>
+                <p id="daily-description">
+                  采集和筛选自动完成，你来决定哪些值得写。
                 </p>
-                <div class="button-row">
-                  <button id="run" class="button primary" type="button">
-                    运行一次流程</button
-                  ><button id="pause" class="button secondary" type="button">
-                    暂停处理
-                  </button>
-                </div>
-                <p id="runtime-error" class="inline-warning" hidden></p>
               </div>
-              <div class="card checks-card">
-                <div class="card-heading">
-                  <h3>运行检查</h3>
-                  <span class="muted">每次刷新同步</span>
-                </div>
-                <div id="checks" class="check-list"></div>
+              <a
+                id="daily-action"
+                class="button primary daily-action"
+                href="#topics"
+                >去挑选素材 <span aria-hidden="true">→</span></a
+              >
+            </div>
+            <div class="daily-stats">
+              <a class="daily-stat" href="#topics" data-review-tab="collected"
+                ><span>今日采集</span><strong id="daily-collected">—</strong
+                ><small>新发现的原帖，含未推荐</small></a
+              >
+              <a
+                class="daily-stat"
+                href="#topics"
+                data-review-tab="recommended"
+                data-review-freshness="new"
+                ><span>今日未看推荐</span
+                ><strong id="daily-recommended">—</strong
+                ><small>今天发现且尚未标记看过</small></a
+              >
+              <a class="daily-stat" href="#jobs"
+                ><span>待审草稿</span><strong id="daily-drafts">—</strong
+                ><small>已在 Postiz，等待你的审核</small></a
+              >
+              <div class="daily-stat">
+                <span>今日写作</span><strong id="daily-writing">—</strong
+                ><small>批准后开始，失败也计入额度</small>
+              </div>
+            </div>
+            <div class="daily-health">
+              <p id="daily-health">正在读取自动采集状态…</p>
+              <a href="#sources" class="quick-link">查看来源与运行 →</a>
+            </div>
+            <div class="pipeline-steps">
+              <div>
+                <b>01</b><strong>挑选值得写的</strong
+                ><span>看摘要、传播表现和推荐理由。</span>
+              </div>
+              <div>
+                <b>02</b><strong>确认写作方向</strong
+                ><span>选择行业观点或品牌内容，再批准生成。</span>
+              </div>
+              <div>
+                <b>03</b><strong>审核，再发布</strong
+                ><span>在 Postiz 修改草稿，亲自确认排期。</span>
               </div>
             </div>
           </section>
 
           <section
             id="materials"
-            class="section"
+            class="section workspace-page"
+            hidden
             aria-labelledby="materials-title"
           >
             <div class="section-heading">
@@ -254,21 +254,10 @@
             </div>
           </section>
 
-          <section class="section" aria-labelledby="activity-title">
-            <div class="section-heading">
-              <div>
-                <span class="eyebrow">LATEST ACTIVITY</span>
-                <h2 id="activity-title">最近流程动态</h2>
-              </div>
-            </div>
-            <div class="card list-card">
-              <div id="events-list" class="list"></div>
-            </div>
-          </section>
-
           <section
             id="candidates"
-            class="section"
+            class="section workspace-page"
+            hidden
             aria-labelledby="candidates-title"
           >
             <div class="section-heading">
@@ -284,7 +273,12 @@
             </div>
           </section>
 
-          <section id="topics" class="section" aria-labelledby="topics-title">
+          <section
+            id="topics"
+            class="section workspace-page"
+            hidden
+            aria-labelledby="topics-title"
+          >
             <div class="section-heading">
               <div>
                 <span class="eyebrow">03 / DECIDE</span>
@@ -301,7 +295,11 @@
               class="social-review-controls"
               hidden
             >
-              <p id="social-quota" class="item-meta"></p>
+              <div
+                id="collection-summary"
+                class="collection-summary"
+                aria-live="polite"
+              ></div>
               <div
                 id="social-review-tabs"
                 class="social-review-tabs"
@@ -314,7 +312,15 @@
                   role="tab"
                   data-social-tab="recommended"
                 >
-                  今日推荐
+                  推荐待办
+                </button>
+                <button
+                  type="button"
+                  class="button secondary"
+                  role="tab"
+                  data-social-tab="collected"
+                >
+                  今日采集
                 </button>
                 <button
                   type="button"
@@ -348,8 +354,11 @@
               aria-label="推荐新鲜度"
               hidden
             >
+              <button type="button" class="button ghost" data-freshness="all">
+                全部
+              </button>
               <button type="button" class="button ghost" data-freshness="new">
-                今日新发现
+                今日未看推荐
               </button>
               <button
                 type="button"
@@ -365,42 +374,30 @@
               >
                 历史待办
               </button>
-              <button type="button" class="button ghost" data-freshness="all">
-                全部
-              </button>
             </div>
-            <details
-              id="editorial-preferences"
-              class="card editorial-preferences"
-              hidden
-            >
-              <summary>人工偏好校准</summary>
-              <p id="editorial-summary" class="item-meta"></p>
-              <p id="editorial-suggestions" class="pre-wrap"></p>
-              <p class="muted">
-                偏好和英文样本用于选材与表达参考，不是品牌事实；不改变事实核查、额度和人工批准规则。清空字段后确认保存可撤销偏好。
-              </p>
-              <button id="editorial-reload" type="button" class="button ghost">
-                载入最新偏好（替换当前输入）
-              </button>
-              <div id="editorial-form"></div>
-            </details>
+
             <div class="card list-card">
               <div id="topics-list" class="list" role="tabpanel"></div>
             </div>
           </section>
 
-          <section id="jobs" class="section" aria-labelledby="jobs-title">
+          <section
+            id="jobs"
+            class="section workspace-page"
+            hidden
+            aria-labelledby="jobs-title"
+          >
             <div class="section-heading">
               <div>
                 <span class="eyebrow">04 / DELIVER</span>
-                <h2 id="jobs-title">内容任务</h2>
+                <h2 id="jobs-title">内容进度</h2>
                 <p>
-                  查看原稿、质量结果与 Postiz 回执；最终审阅和排期仍在 Postiz。
+                  从排队、生成到草稿，查看每一步。最终编辑与排期在 Postiz 完成。
                 </p>
               </div>
               <span id="job-count" class="count"></span>
             </div>
+            <div id="job-summary" class="collection-funnel"></div>
             <div class="job-layout">
               <div class="card list-card">
                 <div id="jobs-list" class="list"></div>
@@ -416,7 +413,8 @@
 
           <section
             id="brand-facts"
-            class="section"
+            class="section workspace-page"
+            hidden
             aria-labelledby="brand-facts-title"
           >
             <div class="section-heading">
@@ -440,42 +438,113 @@
               </div>
               <div id="brand-fact-list" class="card list-card"></div>
             </div>
+            <details
+              id="editorial-preferences"
+              class="card editorial-preferences"
+              hidden
+            >
+              <summary>选材与写作偏好</summary>
+              <p id="editorial-summary" class="item-meta"></p>
+              <p id="editorial-suggestions" class="pre-wrap"></p>
+              <p class="muted">
+                偏好和英文样本用于选材与表达参考，不是品牌事实；不改变事实核查、额度和人工批准规则。清空字段后确认保存可撤销偏好。
+              </p>
+              <button id="editorial-reload" type="button" class="button ghost">
+                载入最新偏好（替换当前输入）
+              </button>
+              <div id="editorial-form"></div>
+            </details>
           </section>
 
-          <section id="sources" class="section" aria-labelledby="sources-title">
+          <section
+            id="sources"
+            class="section workspace-page"
+            hidden
+            aria-labelledby="sources-title"
+          >
             <div class="section-heading">
               <div>
                 <span class="eyebrow">05 / MONITOR</span>
-                <h2 id="sources-title">来源检查</h2>
-                <p>查看启用来源的检查进度与停用来源的历史记录。</p>
+                <h2 id="sources-title">来源与运行</h2>
+                <p>查看自动采集时间和服务状态。日常选材无需手动运行流程。</p>
               </div>
               <span id="source-count" class="count"></span>
             </div>
+            <p id="social-quota" class="item-meta"></p>
+            <div class="metric-grid">
+              <article class="metric-card accent">
+                <span class="metric-label">今日剩余额度</span
+                ><strong id="quota-value">—</strong
+                ><span id="quota-meta" class="metric-detail"
+                  >北京时间 · 每日上限 3 次</span
+                ><progress
+                  id="quota-fill"
+                  class="quota-track"
+                  max="3"
+                  value="0"
+                  aria-label="今日已用生成额度"
+                ></progress>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">流程状态</span
+                ><strong id="runtime-value">—</strong
+                ><span id="runtime-meta" class="metric-detail">等待状态</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">运行准备</span
+                ><strong id="readiness-value">—</strong
+                ><span id="readiness-meta" class="metric-detail">正在检查</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">待你审批</span
+                ><strong id="attention-value">—</strong
+                ><span id="attention-meta" class="metric-detail"
+                  >选题与任务</span
+                >
+                <a id="review-link" class="metric-link" href="#topics"
+                  >去审核选题 →</a
+                >
+              </article>
+            </div>
+            <div class="overview-bottom">
+              <div class="card status-card">
+                <div class="card-heading">
+                  <h3>手动运行与暂停</h3>
+                  <span id="brand-name" class="pill">品牌未配置</span>
+                </div>
+                <p>
+                  系统每天自动采集。手动运行只推进当前可处理的任务，不会重复采集当天已检查的账号，也不会代替你批准写作。
+                </p>
+                <div class="button-row">
+                  <button id="run" class="button primary" type="button">
+                    运行一次流程</button
+                  ><button id="pause" class="button secondary" type="button">
+                    暂停处理
+                  </button>
+                </div>
+                <p id="runtime-error" class="inline-warning" hidden></p>
+              </div>
+              <div class="card checks-card">
+                <div class="card-heading">
+                  <h3>运行检查</h3>
+                  <span class="muted">每次刷新同步</span>
+                </div>
+                <div id="checks" class="check-list"></div>
+              </div>
+            </div>
+            <div class="section" aria-labelledby="activity-title">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">LATEST ACTIVITY</span>
+                  <h2 id="activity-title">最近流程动态</h2>
+                </div>
+              </div>
+              <div class="card list-card">
+                <div id="events-list" class="list"></div>
+              </div>
+            </div>
             <div class="card list-card">
               <div id="sources-list" class="list"></div>
-            </div>
-          </section>
-
-          <section class="section pipeline" aria-labelledby="pipeline-title">
-            <span class="eyebrow">THE FLOW</span>
-            <h2 id="pipeline-title">从信号到草稿</h2>
-            <div class="pipeline-steps">
-              <div>
-                <b>01</b><strong>收集</strong
-                ><span>来源与手动素材进入候选池</span>
-              </div>
-              <div>
-                <b>02</b><strong>筛选</strong
-                ><span>核对价值、证据与重复事件</span>
-              </div>
-              <div>
-                <b>03</b><strong>生成</strong
-                ><span>批准后生成，每日最多 3 次，保留原稿与检查结果</span>
-              </div>
-              <div>
-                <b>04</b><strong>交付</strong
-                ><span>Postiz 中做最终审阅与排期</span>
-              </div>
             </div>
           </section>
         </div>

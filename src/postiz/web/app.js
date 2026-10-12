@@ -12,7 +12,7 @@
     snapshotHealthy: false,
     timer: null,
     socialTab: "recommended",
-    freshness: "new",
+    freshness: "all",
     editorialDirty: false,
     renderedCompetitorMode: null,
   };
@@ -320,6 +320,10 @@
     setBusy(true);
     note("正在处理，请稍候…");
     let succeeded = false;
+    if (options.feedback) {
+      options.feedback.textContent = "正在提交审批…";
+      options.feedback.className = "approval-status";
+    }
     try {
       const result = await request(path, "POST", payload);
       succeeded = true;
@@ -331,17 +335,26 @@
       else if (result?.unresolved)
         note("评估已保存，事件信息仍需人工核对；尚未批准写作。", "info");
       else note(success, "success");
+      if (options.feedback) {
+        options.feedback.textContent = success;
+        options.feedback.className = "approval-status good";
+      }
       if (options.reset) options.reset();
     } catch (error) {
       note(error.message, "error");
+      if (options.feedback) {
+        options.feedback.textContent = error.message;
+        options.feedback.className = "approval-status danger";
+      }
     } finally {
       setBusy(false);
       await refresh({ detail: true, quiet: true, preserveForm: !succeeded });
     }
   }
 
-  function mutateSocial(path, payload, success) {
+  function mutateSocial(path, payload, success, feedback) {
     return mutate(path, payload, success, {
+      feedback,
       reset: () => {
         document.activeElement?.blur();
         $("topics-list")
@@ -351,6 +364,182 @@
           });
       },
     });
+  }
+
+  const pages = {
+    overview: ["今日工作", "从值得关注的帖子，到值得发布的内容。"],
+    topics: ["挑选素材", "先看推荐理由，选好写作方向，再由你批准生成。"],
+    jobs: [
+      "内容进度",
+      "查看排队、生成和草稿状态。最终编辑与排期在 Postiz 完成。",
+    ],
+    materials: ["手动添加", "有了好素材？把链接或正文放在这里。"],
+    candidates: ["采集记录", "查看原始素材、筛选判断和抓取结果。"],
+    "brand-facts": [
+      "品牌资料",
+      "只有已确认、未到期且与选题匹配的资料，才可用于 Tokenhot 产品声明。",
+    ],
+    sources: [
+      "来源与运行",
+      "查看自动采集时间和服务状态。日常选材无需手动运行。",
+    ],
+  };
+  function showPage(focus = false) {
+    const requested = window.location.hash.slice(1) || "overview";
+    const page =
+      requested === "candidates" && state.snapshot?.competitorMode
+        ? "topics"
+        : pages[requested]
+          ? requested
+          : "overview";
+    document.querySelectorAll(".workspace-page").forEach((el) => {
+      el.hidden = el.id !== page;
+    });
+    document.querySelectorAll(".side-nav a").forEach((a) => {
+      if (a.hash === `#${page}`) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    $("page-title").textContent = pages[page][0];
+    $("page-description").textContent = pages[page][1];
+    if (focus) {
+      $("page-title").tabIndex = -1;
+      $("page-title").focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }
+  function discoveredToday(candidate, snapshot) {
+    if (!Number.isFinite(candidate?.createdAt)) return false;
+    const quota = snapshot.quota;
+    if (Number.isFinite(quota?.startsAt) && Number.isFinite(quota?.resetsAt))
+      return (
+        candidate.createdAt >= quota.startsAt &&
+        candidate.createdAt < quota.resetsAt
+      );
+    const day = (date) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
+        new Date(date),
+      );
+    return (
+      day(candidate.createdAt) ===
+      day(snapshot.report?.scope?.generatedAt || Date.now())
+    );
+  }
+  function renderDaily(snapshot, entries) {
+    const jobs = array(snapshot.report?.jobs?.items);
+    const socialIds = new Set(
+      array(snapshot.socialCandidates).map((c) => c.candidateId),
+    );
+    const today = array(snapshot.candidates).filter(
+      (c) =>
+        discoveredToday(c, snapshot) &&
+        (!snapshot.competitorMode || socialIds.has(c.id)),
+    );
+    const recommended = entries.filter(
+      (e) => socialTabFor(e) === "recommended",
+    );
+    const newRecommended = recommended.filter(
+      (e) => e.selected?.editorial?.bucket === "new",
+    );
+    const drafts = jobs.filter((j) => j.delivery?.status === "draft");
+    $("daily-collected").textContent = String(today.length);
+    $("daily-recommended").textContent = snapshot.competitorMode
+      ? String(newRecommended.length)
+      : "—";
+    $("daily-drafts").textContent = String(drafts.length);
+    $("daily-writing").textContent = snapshot.quota
+      ? `${snapshot.quota.used} / ${snapshot.quota.limit}`
+      : "—";
+    const blocked = jobs.filter(
+      (j) =>
+        ["failed", "unknown"].includes(j.localState) ||
+        j.delivery?.status === "failed",
+    );
+    const count = snapshot.competitorMode
+      ? recommended.length
+      : array(snapshot.topics).filter((t) => t.status === "awaiting_approval")
+          .length;
+    const paused = snapshot.runtime?.paused;
+    const notReady = !snapshot.readiness?.ready;
+    const title = paused
+      ? "自动处理已暂停。"
+      : notReady
+        ? "先完成运行准备。"
+        : blocked.length
+          ? `${blocked.length} 项内容需要你处理。`
+          : count
+            ? `${count} 个好选题，等你来挑。`
+            : drafts.length
+              ? `${drafts.length} 份草稿，等你最后把关。`
+              : "今天，还没有新的推荐。";
+    $("daily-title").textContent = title;
+    $("daily-description").textContent = paused
+      ? "已保留素材和任务。前往来源与运行，核对后恢复。"
+      : notReady
+        ? "查看缺失的配置，准备好后再批准写作。"
+        : blocked.length
+          ? "查看失败原因或待核实结果，再决定如何处理。"
+          : count
+            ? `今天采集 ${today.length} 条新帖，有 ${newRecommended.length} 个推荐尚未看过。推荐待办同时保留此前未处理的素材。`
+            : drafts.length
+              ? "到 Postiz 编辑、审核并排期；提交成功不等于已经发布。"
+              : `今天采集 ${today.length} 条新帖。可以查看全部采集结果及未推荐理由，不必为凑数量写作。`;
+    $("daily-action").href =
+      paused || notReady
+        ? "#sources"
+        : blocked.length
+          ? "#jobs"
+          : count
+            ? "#topics"
+            : drafts.length
+              ? "#jobs"
+              : "#topics";
+    $("daily-action").textContent =
+      paused || notReady
+        ? "查看运行状态 →"
+        : blocked.length
+          ? "查看待处理内容 →"
+          : count
+            ? "去挑选素材 →"
+            : drafts.length
+              ? "查看草稿 →"
+              : "查看今日采集 →";
+    $("daily-action").dataset.reviewTab =
+      !count && !drafts.length && !blocked.length && !paused && !notReady
+        ? "collected"
+        : "recommended";
+    const enabled = array(snapshot.sources).filter((s) => s.enabled);
+    const todayChecked = enabled.filter((s) =>
+      discoveredToday({ createdAt: s.checkedAt }, snapshot),
+    );
+    const failed = enabled.filter((s) => s.lastFailure);
+    const next = enabled
+      .map((s) => s.nextCheckAt)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b)[0];
+    $("daily-health").textContent = enabled.length
+      ? `${paused ? "采集已暂停" : failed.length ? `${failed.length} 个来源待恢复` : todayChecked.length === enabled.length ? "今日来源检查已完成" : "等待下一次来源检查"} · ${todayChecked.length}/${enabled.length} 个来源今日已检查${next && !paused ? ` · 下次 ${time(next)}` : ""}（北京时间）`
+      : "尚未配置自动来源，可以先手动添加素材。";
+    const funnel = $("job-summary");
+    clear(funnel);
+    [
+      [
+        "待生成",
+        jobs.filter(
+          (j) => j.localState === "queued" || j.localState === "processing",
+        ).length,
+      ],
+      ["待处理", blocked.length],
+      ["Postiz 草稿", drafts.length],
+      ["已发布", jobs.filter((j) => j.delivery?.status === "published").length],
+    ].forEach(([name, value]) =>
+      funnel.append(
+        add(
+          node("div"),
+          node("span", "muted", name),
+          node("strong", "", value),
+        ),
+      ),
+    );
   }
 
   function render(s) {
@@ -395,8 +584,9 @@
     $("material-readiness").textContent = missing.length
       ? `素材提交暂不可用：${missing.map((check) => missingCheckHelp[check.key] || checkNames[check.key] || check.label).join("、")}。请检查服务端配置。`
       : "";
-    const socialRecommended = array(s.socialCandidates).filter(
-      (item) => item.tier === "recommended",
+    const reviewEntries = socialReviewEntries(s);
+    const socialRecommended = reviewEntries.filter(
+      (e) => socialTabFor(e) === "recommended",
     ).length;
     $("attention-value").textContent = String(
       s.competitorMode
@@ -431,11 +621,9 @@
       !!s.competitorMode;
     $("social-review-controls").hidden = !s.competitorMode;
     $("social-freshness").hidden = !s.competitorMode;
-    $("topics-title").textContent = s.competitorMode
-      ? "竞品素材审批"
-      : "素材审批";
+    $("topics-title").textContent = "挑选素材";
     $("topics-description").textContent = s.competitorMode
-      ? "按今日推荐、待观察、处理异常与历史记录查看来源和评估；批准后生成品牌原创内容。"
+      ? "采集不等于推荐。查看全部新帖和推荐理由，选好角度后再批准写作。"
       : "按同一事件归组查看来源和模型判断；批准写作会使用今日额度并送至 Postiz 草稿。";
     if (!s.competitorMode && !activeFormIn("candidates-list"))
       renderCandidates(array(s.candidates), report);
@@ -451,6 +639,8 @@
     renderJobs(jobs);
     if (!activeFormIn("brand-fact-list")) renderBrandFacts(array(s.brandFacts));
     renderSources(array(s.sources));
+    renderDaily(s, reviewEntries);
+    showPage();
     setBusy(state.busy);
   }
   function activeFormIn(id) {
@@ -682,11 +872,7 @@
     $("editorial-form").append(form);
   }
 
-  function renderSocialTopics(snapshot) {
-    const target = $("topics-list");
-    const candidates = new Map(
-      array(snapshot.candidates).map((candidate) => [candidate.id, candidate]),
-    );
+  function socialReviewEntries(snapshot) {
     const social = new Map(
       array(snapshot.socialCandidates).map((item) => [item.candidateId, item]),
     );
@@ -718,28 +904,58 @@
       if (!linked.has(item.candidateId))
         entries.push({ topic: null, selected: item });
     }
-    const tabFor = ({ topic, selected }) => {
-      if (
-        topic &&
-        (topic.hasContent ||
-          topic.mergedIntoTopicId ||
-          ["ready", "rejected", "existing"].includes(topic.status))
-      )
-        return "history";
-      if (topic?.status === "needs_review")
-        return selected?.tier === "error" || !selected ? "errors" : "watch";
-      if (selected?.tier === "recommended") return "recommended";
-      if (selected?.tier === "error") return "errors";
-      if (selected?.tier === "watch" || selected?.tier === "pending")
-        return "watch";
+    return entries;
+  }
+  function socialTabFor({ topic, selected }) {
+    if (
+      topic &&
+      (topic.hasContent ||
+        topic.mergedIntoTopicId ||
+        ["ready", "rejected", "existing"].includes(topic.status))
+    )
       return "history";
+    if (topic?.status === "needs_review")
+      return selected?.tier === "error" || !selected ? "errors" : "watch";
+    if (selected?.tier === "recommended") return "recommended";
+    if (selected?.tier === "error") return "errors";
+    if (selected?.tier === "watch" || selected?.tier === "pending")
+      return "watch";
+    return "history";
+  }
+  function renderSocialTopics(snapshot) {
+    const target = $("topics-list");
+    const candidates = new Map(
+      array(snapshot.candidates).map((c) => [c.id, c]),
+    );
+    const socialOrder = new Map(
+      array(snapshot.socialCandidates).map((c, i) => [c.candidateId, i]),
+    );
+    const entries = socialReviewEntries(snapshot);
+    const tabFor = socialTabFor;
+    const todayIds = new Set(
+      array(snapshot.candidates)
+        .filter((c) => discoveredToday(c, snapshot))
+        .map((c) => c.id),
+    );
+    const collected = entries.filter(
+      (e) =>
+        e.selected &&
+        (todayIds.has(e.selected.candidateId) ||
+          array(e.topic?.sourceCandidateIds).some((id) => todayIds.has(id))),
+    );
+    const counts = {
+      recommended: 0,
+      watch: 0,
+      errors: 0,
+      history: 0,
+      collected: collected.length,
     };
-    const counts = { recommended: 0, watch: 0, errors: 0, history: 0 };
     entries.forEach((entry) => {
       counts[tabFor(entry)] += 1;
     });
     const tabNames = {
-      recommended: "今日推荐",
+      recommended: "推荐待办",
+      collected: "今日采集",
       watch: "待观察",
       errors: "处理异常",
       history: "历史记录",
@@ -766,7 +982,7 @@
       (item) => item.editorial?.bucket,
     );
     const freshnessNames = {
-      new: "今日新发现",
+      new: "今日未看推荐",
       rising: "传播上升",
       backlog: "历史待办",
       all: "全部",
@@ -792,14 +1008,15 @@
           hasFreshness ? bucket === state.freshness : bucket === "all",
         );
       });
-    const visible = entries
+    const visible = (state.socialTab === "collected" ? collected : entries)
       .filter(
         (entry) =>
-          tabFor(entry) === state.socialTab &&
-          (state.socialTab !== "recommended" ||
-            !hasFreshness ||
-            state.freshness === "all" ||
-            entry.selected?.editorial?.bucket === state.freshness),
+          state.socialTab === "collected" ||
+          (tabFor(entry) === state.socialTab &&
+            (state.socialTab !== "recommended" ||
+              !hasFreshness ||
+              state.freshness === "all" ||
+              entry.selected?.editorial?.bucket === state.freshness)),
       )
       .sort(
         (a, b) =>
@@ -809,20 +1026,86 @@
       );
     $("topic-count").textContent = `${visible.length} 条`;
     clear(target);
+    const todayStates = array(snapshot.socialCandidates).filter((c) =>
+      todayIds.has(c.candidateId),
+    );
+    const summary = $("collection-summary");
+    clear(summary);
+    const incoming = todayStates.length;
+    const nRecommended = todayStates.filter(
+      (c) => c.tier === "recommended",
+    ).length;
+    const nWatch = todayStates.filter((c) =>
+      ["watch", "pending"].includes(c.tier),
+    ).length;
+    const nOther = todayStates.filter(
+      (c) => c.tier === "not_recommended",
+    ).length;
+    const nError = todayStates.filter((c) => c.tier === "error").length;
+    summary.append(
+      node(
+        "p",
+        "",
+        `今天采集 ${incoming} 条新帖 · 推荐 ${nRecommended} · 观察 / 待评估 ${nWatch} · 未推荐 ${nOther} · 评估异常 ${nError}`,
+      ),
+    );
+    summary.append(
+      node(
+        "p",
+        "item-meta",
+        state.socialTab === "collected"
+          ? `下面展示 ${collected.length} 组选题，包含未推荐的新帖。同一事件的多个来源会合并展示。`
+          : "每天自动采集一次；推荐待办包含历史未处理素材。今天没有新推荐，也可以查看全部采集结果。",
+      ),
+    );
     if (!visible.length) {
-      target.append(
-        empty(
-          `暂无${tabNames[state.socialTab]}素材`,
-          "下次流程运行后会自动更新。",
-        ),
+      const newEmpty =
+        state.socialTab === "recommended" && state.freshness === "new";
+      const message =
+        state.socialTab === "collected"
+          ? "今天暂未采集到新帖"
+          : newEmpty
+            ? "今天没有未看推荐"
+            : state.socialTab === "recommended" && state.freshness === "rising"
+              ? "暂无传播明显上升的推荐"
+              : `暂无${tabNames[state.socialTab]}素材`;
+      const box = empty(
+        message,
+        newEmpty
+          ? `今日已采集 ${incoming} 条，未进入新增推荐的帖子仍可查看。历史待办有 ${recommended.filter((e) => e.selected?.editorial?.bucket === "backlog").length} 个。`
+          : "可以切换分类，或到来源与运行查看采集进度。",
       );
+      if (state.socialTab === "recommended") {
+        const all = node(
+          "button",
+          "button secondary",
+          `查看全部推荐（${recommended.length}）`,
+        );
+        all.type = "button";
+        all.addEventListener("click", () => {
+          state.freshness = "all";
+          renderSocialTopics(state.snapshot);
+        });
+        const incomingButton = node("button", "button ghost", "查看今日采集");
+        incomingButton.type = "button";
+        incomingButton.addEventListener("click", () => {
+          state.socialTab = "collected";
+          renderSocialTopics(state.snapshot);
+        });
+        box.append(add(node("div", "button-row"), all, incomingButton));
+      }
+      target.append(box);
       return;
     }
     visible.forEach(({ topic, selected }) => {
       const assessment = selected?.assessment;
       const original = selected ? candidates.get(selected.candidateId) : null;
       const title = assessment?.title || topic?.title || "候选素材待评估";
-      const row = node("article", "list-item social-item");
+      const row = node("article", "list-item social-item review-card");
+      const evidence = add(
+        node("details", "review-evidence"),
+        node("summary", "", "查看指标详情与事实缺口"),
+      );
       const stateLabel =
         selected?.tier === "recommended"
           ? "推荐"
@@ -830,7 +1113,11 @@
             ? "待观察"
             : selected?.tier === "error"
               ? "评估异常"
-              : "历史";
+              : selected?.tier === "not_recommended"
+                ? "未推荐"
+                : selected?.tier === "pending"
+                  ? "待评估"
+                  : "历史";
       add(
         row,
         add(
@@ -845,7 +1132,7 @@
         node(
           "p",
           "item-meta",
-          `${selected?.social?.authorHandle ? `@${selected.social.authorHandle}` : "作者未提供"} · ${topic ? `选题 ${shortId(topic.id)}` : "尚未形成选题"}`,
+          `${selected?.social?.authorHandle ? `@${selected.social.authorHandle}` : "作者未提供"}${selected?.social?.publishedAt ? ` · 发布于 ${time(selected.social.publishedAt)}` : ""}`,
         ),
       );
       if (selected?.editorial) {
@@ -858,7 +1145,7 @@
           ),
         );
         if (editorial.reason)
-          row.append(node("p", "reason", `推荐变化：${editorial.reason}`));
+          evidence.append(node("p", "reason", `推荐变化：${editorial.reason}`));
         if (editorial.snoozedUntil)
           row.append(
             node(
@@ -875,11 +1162,19 @@
       if (assessment?.summary)
         row.append(node("p", "social-summary", assessment.summary));
       if (assessment?.reason)
-        row.append(node("p", "reason", `推荐依据：${assessment.reason}`));
-      if (assessment?.angle)
-        row.append(node("p", "reason", `可写角度：${assessment.angle}`));
-      if (array(assessment?.factGaps).length)
         row.append(
+          node(
+            "p",
+            "review-reasons",
+            `${selected.tier === "not_recommended" ? "未推荐原因" : "为什么值得看"}：${assessment.reason}`,
+          ),
+        );
+      if (assessment?.angle)
+        row.append(
+          node("p", "review-reasons", `可以借鉴：${assessment.angle}`),
+        );
+      if (array(assessment?.factGaps).length)
+        evidence.append(
           node(
             "p",
             "inline-warning",
@@ -918,7 +1213,7 @@
             `互动率：${typeof rate === "number" && Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : "未提供"} · 观测于 ${time(socialData.observedAt)}`,
           ),
         );
-        row.append(
+        evidence.append(
           node(
             "p",
             "item-meta",
@@ -927,7 +1222,7 @@
         );
         const performance = selected.performance;
         if (assessment)
-          row.append(
+          evidence.append(
             node(
               "p",
               "reason",
@@ -940,7 +1235,7 @@
           ["互动率", performance?.rateScore],
         ].filter(([, value]) => typeof value === "number");
         if (ranks.length)
-          row.append(
+          evidence.append(
             node(
               "p",
               "item-meta",
@@ -951,7 +1246,7 @@
           performance?.accountScore !== null &&
           typeof performance?.accountScore === "number"
         )
-          row.append(
+          evidence.append(
             node(
               "p",
               "item-meta",
@@ -959,7 +1254,7 @@
             ),
           );
         else
-          row.append(
+          evidence.append(
             node(
               "p",
               "item-meta",
@@ -967,7 +1262,7 @@
             ),
           );
         if (performance?.sufficient !== true)
-          row.append(
+          evidence.append(
             node(
               "p",
               "item-meta",
@@ -994,7 +1289,7 @@
           node(
             "p",
             "inline-warning",
-            `待补品牌资料：${array(topic.brandReadiness.missing).join("、") || "请补齐品牌事实"}。补齐前不能批准写作。`,
+            `待补品牌资料：${array(topic.brandReadiness.missing).join("、") || "请补齐品牌事实"}。写品牌内容需先补齐；行业观点可在写作方向中单独选择。`,
           ),
         );
       const genericModelError =
@@ -1008,17 +1303,18 @@
       const plainError =
         selected?.errorMessage ||
         (selected?.tier === "error" ? genericModelError : "");
-      if (plainError)
+      if (plainError && (selected?.errorCode || selected?.tier === "error"))
         row.append(node("p", "inline-warning", displayModelError(plainError)));
       if (!assessment?.reason && topic?.reason)
         row.append(node("p", "reason", displayModelError(topic.reason)));
+      row.append(evidence);
       if (
         selected &&
         ["awaiting_approval", "needs_review"].includes(topic?.status) &&
         !topic.hasContent &&
         !topic.mergedIntoTopicId
       ) {
-        const actions = node("div", "topic-actions");
+        const actions = node("div", "topic-actions review-actions");
         const endpoint = `/api/topics/${encodeURIComponent(topic.id)}/review`;
         const conflicts = array(topic.conflictingTopicIds);
         const mergeOptions = conflicts
@@ -1057,13 +1353,13 @@
           (!conflicts.length || mergeOptions.length)
         ) {
           const approval = actionForm(
-            selected.tier === "watch" ? "人工选择并批准写作" : "批准写作",
+            selected.tier === "watch" ? "选择写作方向" : "设置写作与审批",
             [
-              selectField("writingScope", "写作范围", [
-                { value: "", label: "按已确认品牌资料写作" },
-                { value: "general", label: "通用观点（不介绍自有产品）" },
+              selectField("writingScope", "写作方向", [
+                { value: "", label: "品牌内容（需要已确认资料）" },
+                { value: "general", label: "行业观点（不介绍自有产品）" },
               ]),
-              field(
+              textareaField(
                 "writingAngle",
                 "写作角度（可选）",
                 false,
@@ -1097,15 +1393,22 @@
                     : {}),
                   ...(values.mergeWith ? { mergeWith: values.mergeWith } : {}),
                 },
-                "已批准写作，任务将进入 Postiz 草稿流程。",
+                "批准已保存。后台会按额度生成，进度请到「内容进度」查看。",
+                result,
               );
             },
           );
+          approval.classList.add("approval-panel");
           const form = approval.querySelector("form");
+          const submitButton = form.querySelector('button[type="submit"]');
+          submitButton.textContent = "批准写作";
+          submitButton.className = "button primary";
           const result = node(
             "p",
-            "item-meta",
-            "修改角度后可先检查资料；只有你点击批准才会进入写作。",
+            "approval-status",
+            topic.brandReadiness?.ready === false
+              ? `品牌内容尚缺资料：${array(topic.brandReadiness.missing).join("；")}。也可明确改选行业观点，再检查。`
+              : "先确认方向和角度。批准后使用每日写作额度，只生成 Postiz 草稿。",
           );
           result.setAttribute("role", "status");
           const check = node("button", "button secondary", "检查所需资料");
@@ -1129,16 +1432,20 @@
               result.textContent = checked.ready
                 ? "资料检查通过，可以批准写作。"
                 : `待补充：${array(checked.missing).join("；")}`;
+              result.className = `approval-status ${checked.ready ? "good" : "danger"}`;
             } catch (error) {
               result.textContent = error.message;
+              result.className = "approval-status danger";
             } finally {
               setBusy(false);
             }
           });
           form.addEventListener("input", () => {
             result.textContent = "角度已修改，请重新检查资料。";
+            result.className = "approval-status";
           });
-          form.append(check, result);
+          form.insertBefore(check, submitButton);
+          form.insertBefore(result, submitButton);
           actions.append(approval);
         }
         actions.append(
@@ -2478,6 +2785,17 @@
     return details;
   }
 
+  window.addEventListener("hashchange", () => showPage(true));
+  document.addEventListener("click", (event) => {
+    const a = event.target.closest('a[href^="#"]');
+    if (!a || !pages[a.hash.slice(1)]) return;
+    if (a.dataset.reviewTab) {
+      state.socialTab = a.dataset.reviewTab;
+      state.freshness = a.dataset.reviewFreshness || "all";
+      if (state.snapshot?.competitorMode) renderSocialTopics(state.snapshot);
+    }
+    if (window.location.hash === a.hash) showPage(true);
+  });
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const password = $("password").value;
@@ -2574,7 +2892,7 @@
     });
   });
   $("brand-fact-create").append(brandFactForm());
-  refresh();
+  refresh({ quiet: true });
   state.timer = window.setInterval(() => {
     if (!document.hidden && $("login-view").hidden)
       refresh({

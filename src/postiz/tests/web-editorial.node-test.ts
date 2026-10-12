@@ -158,16 +158,18 @@ void test("editorial filters, backend ordering and explicit feedback preserve ap
       }
       return route.abort();
     });
-    await page.goto("https://test.local/");
+    await page.goto("https://test.local/#topics");
     await page.getByRole("heading", { name: "第一推荐" }).waitFor();
     assert.deepEqual(await page.locator("#topics-list h3").allTextContents(), [
       "第一推荐",
       "未归组推荐",
+      "上升推荐",
+      "历史推荐",
     ]);
     assert.equal(posts.length, 0, "rendering never marks seen");
     assert.equal(
       await page
-        .getByRole("button", { name: "今日新发现 2", exact: true })
+        .getByRole("button", { name: "全部 4", exact: true })
         .getAttribute("aria-pressed"),
       "true",
     );
@@ -183,8 +185,15 @@ void test("editorial filters, backend ordering and explicit feedback preserve ap
         .count(),
       1,
     );
-    assert.equal(await page.getByText(/未处理 2 天/).count(), 2);
-    assert.equal(await page.getByText(/推荐限制：同账号推荐上限/).count(), 2);
+    assert.equal(await page.getByText(/未处理 2 天/).count(), 4);
+    assert.equal(await page.getByText(/推荐限制：同账号推荐上限/).count(), 4);
+    await page
+      .getByRole("button", { name: "今日未看推荐 2", exact: true })
+      .click();
+    assert.deepEqual(await page.locator("#topics-list h3").allTextContents(), [
+      "第一推荐",
+      "未归组推荐",
+    ]);
     await page.getByRole("button", { name: "传播上升 1", exact: true }).click();
     assert.deepEqual(await page.locator("#topics-list h3").allTextContents(), [
       "上升推荐",
@@ -255,6 +264,7 @@ void test("editorial filters, backend ordering and explicit feedback preserve ap
       posts.some((post) => post.path.endsWith("/review")),
       false,
     );
+    await page.locator('.side-nav a[href="#brand-facts"]').click();
     await page.locator("#editorial-preferences > summary").click();
     assert.equal(await page.getByText(/反馈样本：5 条素材/).count(), 1);
     await page.locator("#editorial-form summary").click();
@@ -330,8 +340,9 @@ void test("editorial filters, backend ordering and explicit feedback preserve ap
       confirmed: true,
     });
     legacy = true;
+    await page.locator('.side-nav a[href="#topics"]').click();
     await page
-      .getByRole("button", { name: "今日新发现 2", exact: true })
+      .getByRole("button", { name: "今日未看推荐 2", exact: true })
       .click();
     await page.getByRole("button", { name: "刷新", exact: true }).click();
     await page
