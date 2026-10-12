@@ -187,6 +187,24 @@ void test("daily counts, collected discoveries, hash navigation and inline appro
     await card
       .getByLabel("写作角度（可选）", { exact: true })
       .fill("用行业案例解释可复现的实践");
+    await card.getByRole("link", { name: "去品牌资料补充并确认 →" }).click();
+    await page.locator("#brand-facts").waitFor({ state: "visible" });
+    await page.getByText("怎样补充，才能用于写作？", { exact: true }).click();
+    assert.equal(
+      await page.getByText(/资料检查通过表示具备写作所需证据/).isVisible(),
+      true,
+    );
+    assert.equal(
+      posts.length,
+      0,
+      "opening evidence help does not confirm any fact or approve writing",
+    );
+    await page.goBack();
+    await page.locator("#topics").waitFor({ state: "visible" });
+    assert.equal(
+      await card.getByLabel("写作角度（可选）").inputValue(),
+      "用行业案例解释可复现的实践",
+    );
     const readsBeforeApproval = reads;
     await card.getByRole("button", { name: "批准写作", exact: true }).click();
     await card

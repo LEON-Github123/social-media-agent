@@ -14,7 +14,11 @@ import type { GenerationQuotaOptions } from "./operations-store.js";
 import { BrandKnowledgeStore } from "./brand-knowledge.js";
 import type { WritingIntent } from "./social-store.js";
 import type { SocialCandidateState } from "./social-types.js";
-import { JobConflictError, LeaseLostError } from "./store-errors.js";
+import {
+  JobConflictError,
+  LeaseLostError,
+  WritingReadinessError,
+} from "./store-errors.js";
 export { JobConflictError, LeaseLostError } from "./store-errors.js";
 export type {
   ContentFeedback,
@@ -905,9 +909,7 @@ export class ContentJobStore extends BrandKnowledgeStore {
         options.writingScope,
       );
       if (options.decision === "approve" && !readiness.ready)
-        throw new JobConflictError(
-          `待补充品牌资料：${readiness.missing.join("；")}`,
-        );
+        throw new WritingReadinessError(readiness.missing);
       if (!readiness.states.length)
         throw new JobConflictError("选题没有可信竞对素材");
       const topic = this.reviewTopic(id, {

@@ -1446,6 +1446,22 @@
           });
           form.insertBefore(check, submitButton);
           form.insertBefore(result, submitButton);
+          const evidenceHelp = node("div", "approval-evidence-help");
+          const evidenceLink = node(
+            "a",
+            "quick-link",
+            "去品牌资料补充并确认 →",
+          );
+          evidenceLink.href = "#brand-facts";
+          evidenceHelp.append(
+            evidenceLink,
+            node(
+              "p",
+              "item-meta",
+              "添加真实证据 → 核对并确认事实 → 返回这里重新检查。价格和性能声明需要各自的依据；仅解读行业动态时，可明确选择行业观点。",
+            ),
+          );
+          form.insertBefore(evidenceHelp, submitButton);
           actions.append(approval);
         }
         actions.append(

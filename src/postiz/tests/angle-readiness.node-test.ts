@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:net";
 import { ContentJobStore } from "../store.js";
 import { selectSocialCandidates } from "../social-selector.js";
-import { Workbench } from "../workbench.js";
+import { Workbench, createWorkbenchHttp } from "../workbench.js";
+import { JobConflictError } from "../store-errors.js";
 import { readConfig } from "../config.js";
 import { validateBrand } from "../validation.js";
 
@@ -111,6 +113,70 @@ async function fixture(kind: "creative" | "announcement" = "creative") {
   });
   return { store, topic, workbench, candidate };
 }
+
+void test("HTTP approval explains missing brand evidence without exposing other conflicts", async (t) => {
+  const { store, topic, workbench } = await fixture();
+  const listener = createServer();
+  await new Promise<void>((done) => listener.listen(0, "127.0.0.1", done));
+  const address = listener.address();
+  assert.ok(address && typeof address !== "string");
+  await new Promise<void>((done) => listener.close(() => done()));
+  const origin = `http://127.0.0.1:${address.port}`;
+  const password = "isolated approval test password";
+  const server = createWorkbenchHttp(workbench, { origin, password });
+  await new Promise<void>((done) =>
+    server.listen(address.port, "127.0.0.1", done),
+  );
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    store.close();
+  });
+  const headers = { origin, "content-type": "application/json" };
+  const login = await fetch(`${origin}/api/login`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ password }),
+  });
+  const cookie = login.headers.get("set-cookie")?.split(";")[0];
+  assert.equal(login.status, 200);
+  assert.ok(cookie);
+  const approve = () =>
+    fetch(`${origin}/api/topics/${topic.id}/review`, {
+      method: "POST",
+      headers: { ...headers, cookie },
+      body: JSON.stringify({
+        decision: "approve",
+        reason: "人工核对",
+        writingAngle: "介绍 Tokenhot 的价格与吞吐性能",
+      }),
+    });
+  const response = await approve();
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(body.code, "writing_requirements_not_met");
+  assert.match(body.error, /尚未批准写作.*请先处理/);
+  assert.deepEqual(body.missing, [
+    "与该选题及写作角度匹配的已确认 Tokenhot 资料",
+    "有效的 Tokenhot 价格依据",
+    "可核实的 Tokenhot 性能或测试依据",
+  ]);
+  assert.equal(store.getTopic(topic.id)?.status, "awaiting_approval");
+  assert.equal(store.getTopicIntent(topic.id), null);
+  assert.equal(store.listGenerationAttempts({ brandId: brand.id }).length, 0);
+  assert.equal(store.list({ brandId: brand.id }).length, 0);
+
+  workbench.mutate = async () => {
+    throw new JobConflictError(
+      "private-id and secret-fixture must not be exposed",
+    );
+  };
+  const other = await approve();
+  assert.equal(other.status, 409);
+  assert.deepEqual(await other.json(), {
+    error: "当前状态不允许此操作，请刷新后核对素材或任务状态。",
+  });
+});
 
 void test("blocked brand angle can be checked and explicitly changed to general insight before approval", async (t) => {
   const { store, topic, workbench } = await fixture();

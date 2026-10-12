@@ -28,7 +28,7 @@ import {
   syncSubmitted,
   assertSchedulingAllowed,
 } from "./runner.js";
-import { JobConflictError } from "./store-errors.js";
+import { JobConflictError, WritingReadinessError } from "./store-errors.js";
 import { readLocalText } from "./files.js";
 import { sourceIdentity } from "./sources.js";
 import { competitorSources } from "./social-pipeline.js";
@@ -1017,6 +1017,12 @@ export function createWorkbenchHttp(
       }
       throw new HttpError(404, "Route was not found");
     } catch (error) {
+      if (error instanceof WritingReadinessError)
+        return json(response, 409, {
+          code: "writing_requirements_not_met",
+          error: `尚未批准写作。请先处理：${error.missing.join("；")}。`,
+          missing: error.missing,
+        });
       const status =
         error instanceof HttpError
           ? error.status
@@ -1030,7 +1036,7 @@ export function createWorkbenchHttp(
           error instanceof HttpError
             ? error.message
             : status === 409
-              ? "Operation conflicts with current state"
+              ? "当前状态不允许此操作，请刷新后核对素材或任务状态。"
               : status === 400
                 ? "Invalid request"
                 : "Operation failed",
