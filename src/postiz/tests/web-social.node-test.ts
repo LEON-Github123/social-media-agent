@@ -210,7 +210,11 @@ void test("competitor review uses backend tiers, protects approval and preserves
     await page
       .locator("#topics-list summary", { hasText: "设置写作与审批" })
       .click();
-    await page.getByLabel("写作方向").selectOption("general");
+    assert.equal(await page.getByLabel("写作方向").inputValue(), "general");
+    assert.match(
+      await page.locator(".approval-panel").innerText(),
+      /允许第三方品牌/,
+    );
     await page.getByLabel("写作角度（可选）").fill("通用输入格式教程");
     await page.getByRole("button", { name: "检查所需资料" }).click();
     await page.getByText("资料检查通过，可以批准写作。").waitFor();
@@ -248,6 +252,7 @@ void test("competitor review uses backend tiers, protects approval and preserves
         decision: "approve",
         reason: "人工批准竞品选题写作",
         purpose: "brand_original",
+        writingScope: "general",
       },
     });
     await page.waitForFunction(
@@ -329,6 +334,7 @@ void test("competitor review uses backend tiers, protects approval and preserves
     await page
       .locator("#topics-list summary", { hasText: "设置写作与审批" })
       .click();
+    await page.getByLabel("写作方向").selectOption("");
     await page.getByLabel("写作角度（可选）").fill("聚焦实践");
     await page.getByRole("button", { name: "刷新" }).click();
     assert.equal(

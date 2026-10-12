@@ -7,6 +7,7 @@
     snapshot: null,
     selectedJob: null,
     detail: null,
+    jobRequest: 0,
     busy: false,
     loading: false,
     snapshotHealthy: false,
@@ -186,6 +187,10 @@
     document.querySelectorAll("button").forEach((button) => {
       if (!button.closest("#app-view")) return;
       if (button.id === "refresh" || button.id === "logout") return;
+      if (button.closest('form[data-stale="true"]')) {
+        button.disabled = true;
+        return;
+      }
       if (button.id === "run")
         button.disabled =
           busy ||
@@ -1356,8 +1361,11 @@
             selected.tier === "watch" ? "选择写作方向" : "设置写作与审批",
             [
               selectField("writingScope", "写作方向", [
+                {
+                  value: "general",
+                  label: "行业观点（允许第三方品牌，运营复核）",
+                },
                 { value: "", label: "品牌内容（需要已确认资料）" },
-                { value: "general", label: "行业观点（不介绍自有产品）" },
               ]),
               textareaField(
                 "writingAngle",
@@ -1406,9 +1414,7 @@
           const result = node(
             "p",
             "approval-status",
-            topic.brandReadiness?.ready === false
-              ? `品牌内容尚缺资料：${array(topic.brandReadiness.missing).join("；")}。也可明确改选行业观点，再检查。`
-              : "先确认方向和角度。批准后使用每日写作额度，只生成 Postiz 草稿。",
+            "默认行业观点，允许第三方品牌出现在草稿。运营需在 Postiz 核对正文并补充正确模型链接；选择品牌内容仍需已确认的品牌资料。批准后使用每日写作额度，只生成草稿。",
           );
           result.setAttribute("role", "status");
           const check = node("button", "button secondary", "检查所需资料");
@@ -2258,20 +2264,19 @@
   async function loadJob(id, { preserveForm = false } = {}) {
     const target = $("job-detail");
     const sameJob = state.detail?.job?.id === id;
-    if (sameJob && preserveForm && activeFormIn("job-detail")) return;
+    const requestId = ++state.jobRequest;
     if (!sameJob) {
       clear(target);
       target.append(empty("正在加载任务", "读取原稿和 Postiz 状态…"));
     }
     try {
       const detail = await request(`/api/jobs/${encodeURIComponent(id)}`);
-      if (state.selectedJob !== id) return;
-      if (sameJob && preserveForm && activeFormIn("job-detail")) return;
+      if (state.selectedJob !== id || state.jobRequest !== requestId) return;
       state.detail = detail;
-      renderJobDetail(detail);
+      renderJobDetail(detail, { preserveForm: sameJob && preserveForm });
       setBusy(state.busy);
     } catch (error) {
-      if (state.selectedJob === id) {
+      if (state.selectedJob === id && state.jobRequest === requestId) {
         if (sameJob) {
           target.querySelector("#detail-refresh-error")?.remove();
           const warning = node(
@@ -2291,8 +2296,31 @@
       }
     }
   }
-  function renderJobDetail(detail) {
+  function renderJobDetail(detail, { preserveForm = false } = {}) {
     const target = $("job-detail");
+    const focused = document.activeElement;
+    const forms = preserveForm
+      ? [...target.querySelectorAll("details.action-form")]
+          .filter(
+            (item) =>
+              item.open ||
+              item.contains(focused) ||
+              item.querySelector("form")?.dataset.dirty === "true",
+          )
+          .map((item) => ({
+            item,
+            caption: item.querySelector("summary").textContent,
+            form: item.querySelector("form"),
+            focusedName: item.contains(focused) ? focused.name : null,
+            values: [...item.querySelectorAll("input, textarea, select")].map(
+              (input) => ({
+                name: input.name,
+                value: input.value,
+                checked: input.checked,
+              }),
+            ),
+          }))
+      : [];
     clear(target);
     const job = detail.job || {};
     const reportJob =
@@ -2343,7 +2371,18 @@
     target.append(facts);
     if (job.platformUrl) target.append(link(job.platformUrl, "查看平台文章 ↗"));
     const postiz = safeUrl(detail.postizUrl || state.snapshot?.postizUrl);
-    if (postiz) target.append(link(postiz, "打开 Postiz 完成最终审阅 ↗"));
+    if (job.postizId?.trim() && postiz)
+      target.append(link(postiz, "打开 Postiz 完成最终审阅 ↗"));
+    else if (!job.postizId?.trim())
+      target.append(
+        node(
+          "p",
+          "item-meta",
+          job.state === "unknown"
+            ? "尚未确认送达 Postiz。提交结果未知，请先在 Postiz 核对并绑定已有内容，避免重复提交。"
+            : "当前尚未送达 Postiz，取得提交回执后会显示最终审阅入口。",
+        ),
+      );
     section(
       target,
       "当前检查稿",
@@ -2369,6 +2408,17 @@
           : `${checks.approved === true ? "检查通过" : checks.approved === false ? "检查未通过" : "等待确认"}${array(checks.reasons).length ? `\n${checks.reasons.join("\n")}` : ""}`,
         "pre-wrap",
       );
+    const warnings = array(output?.quality?.warnings).filter(
+      (warning) => typeof warning === "string" && warning.trim(),
+    );
+    if (warnings.length) {
+      const box = add(
+        node("div", "detail-section"),
+        node("h4", "", "运营复核点（不阻断草稿）"),
+      );
+      warnings.forEach((warning) => box.append(node("p", "reason", warning)));
+      target.append(box);
+    }
     const sources = array(job.input?.sources);
     if (sources.length) {
       const box = add(node("div", "detail-section"), node("h4", "", "来源"));
@@ -2491,6 +2541,41 @@
       target.append(box);
     }
     renderJobActions(target, job);
+    const actions = target.querySelector(".actions");
+    forms.forEach((saved) => {
+      const current = [...actions.querySelectorAll("details.action-form")].find(
+        (item) => item.querySelector("summary").textContent === saved.caption,
+      );
+      if (current) {
+        const form = current.querySelector("form");
+        saved.values.forEach((value) => {
+          const input = form.elements.namedItem(value.name);
+          if (!input) return;
+          if (input.type === "checkbox") input.checked = value.checked;
+          else input.value = value.value;
+        });
+        form.dataset.dirty = saved.form.dataset.dirty || "";
+        current.open = saved.item.open;
+        if (saved.focusedName)
+          form.elements.namedItem(saved.focusedName)?.focus();
+      } else {
+        saved.form.dataset.stale = "true";
+        if (!saved.item.querySelector(".stale-form-warning"))
+          saved.form.prepend(
+            node(
+              "p",
+              "inline-warning stale-form-warning",
+              "任务状态已变化，此操作已失效。输入已保留，可复制后用于当前可用操作。",
+            ),
+          );
+        saved.form.querySelectorAll("button").forEach((button) => {
+          button.disabled = true;
+        });
+        actions.append(saved.item);
+        if (saved.focusedName)
+          saved.form.elements.namedItem(saved.focusedName)?.focus();
+      }
+    });
   }
   function section(parent, title, body, cls = "") {
     parent.append(
@@ -2774,8 +2859,18 @@
     const button = node("button", "button secondary", caption);
     button.type = "submit";
     form.append(button);
+    form.addEventListener("input", () => {
+      form.dataset.dirty = "true";
+    });
+    form.addEventListener("change", () => {
+      form.dataset.dirty = "true";
+    });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (form.dataset.stale === "true") {
+        note("任务状态已变化，此操作已失效，请使用当前可用操作。", "error");
+        return;
+      }
       const values = {};
       fields.forEach((spec) => {
         const input = form.elements.namedItem(spec.name);
@@ -2839,7 +2934,9 @@
     state.selectedJob = null;
     showLogin();
   });
-  $("refresh").addEventListener("click", () => refresh({ detail: true }));
+  $("refresh").addEventListener("click", () =>
+    refresh({ detail: true, preserveForm: true }),
+  );
   $("social-review-tabs").addEventListener("click", (event) => {
     const tab = event.target.closest("[data-social-tab]")?.dataset.socialTab;
     if (!tab || !state.snapshot?.competitorMode) return;
@@ -2912,7 +3009,7 @@
   state.timer = window.setInterval(() => {
     if (!document.hidden && $("login-view").hidden)
       refresh({
-        detail: !!state.selectedJob && !activeFormIn("job-detail"),
+        detail: !!state.selectedJob,
         quiet: true,
         preserveForm: true,
       });
