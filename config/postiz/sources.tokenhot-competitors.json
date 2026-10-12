@@ -1,0 +1,52 @@
+[
+  {
+    "id": "twitterapi-ooffooxx",
+    "type": "twitterapi-user",
+    "userName": "ooffooxx",
+    "checkIntervalMs": 86400000,
+    "maxAgeHours": 168,
+    "maxPages": 1,
+    "limit": 20,
+    "primary": false
+  },
+  {
+    "id": "twitterapi-CheaperInfer",
+    "type": "twitterapi-user",
+    "userName": "CheaperInfer",
+    "checkIntervalMs": 86400000,
+    "maxAgeHours": 168,
+    "maxPages": 1,
+    "limit": 20,
+    "primary": false
+  },
+  {
+    "id": "twitterapi-wavespeed_ai",
+    "type": "twitterapi-user",
+    "userName": "wavespeed_ai",
+    "checkIntervalMs": 86400000,
+    "maxAgeHours": 168,
+    "maxPages": 1,
+    "limit": 20,
+    "primary": false
+  },
+  {
+    "id": "twitterapi-OpenRouter",
+    "type": "twitterapi-user",
+    "userName": "OpenRouter",
+    "checkIntervalMs": 86400000,
+    "maxAgeHours": 168,
+    "maxPages": 1,
+    "limit": 20,
+    "primary": false
+  },
+  {
+    "id": "twitterapi-fal",
+    "type": "twitterapi-user",
+    "userName": "fal",
+    "checkIntervalMs": 86400000,
+    "maxAgeHours": 168,
+    "maxPages": 1,
+    "limit": 20,
+    "primary": false
+  }
+]
